@@ -2011,10 +2011,13 @@ window.addEventListener('afterprint', () => document.body.classList.remove('prin
 // --- print: full pack, as a generated PDF (not the browser's print engine) — laid out with
 // explicit mm coordinates so page breaks land exactly where intended (Notes always starts
 // its own page instead of the browser guessing where content overflows) ---
-function mm2px(mm, dpi = 150) { return Math.round(mm * dpi / 25.4); }
+function mm2px(mm, dpi = 110) { return Math.round(mm * dpi / 25.4); }
 
-// rasterise an SVG string to a PNG data URL via an offscreen canvas — routeSVG already
-// inlines every style as attributes, so this needs no stylesheet/DOM attachment
+// rasterise an SVG string to a JPEG data URL via an offscreen canvas — routeSVG already
+// inlines every style as attributes, so this needs no stylesheet/DOM attachment.
+// JPEG (not PNG): these maps are dense line-art with lots of anti-aliased edges, which
+// PNG compresses poorly — a fully-opaque JPEG at high quality is a fraction of the size
+// with no visible difference, and is what was blowing the pack up to 160MB+.
 function svgToPngDataUrl(svgStr, pxW, pxH) {
   return new Promise((resolve, reject) => {
     const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
@@ -2027,7 +2030,7 @@ function svgToPngDataUrl(svgStr, pxW, pxH) {
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pxW, pxH);
       ctx.drawImage(img, 0, 0, pxW, pxH);
       URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/png'));
+      resolve(canvas.toDataURL('image/jpeg', 0.88));
     };
     img.onerror = err => { URL.revokeObjectURL(url); reject(err); };
     img.src = url;
@@ -2116,7 +2119,7 @@ function wardIndexSVG(routes, wm, wardBbox, wardOutline, aspect) {
 }
 
 async function buildRoutesPackPdf() {
-  const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+  const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', compress: true });
   const pageW = 210, pageH = 297, margin = 15, contentW = pageW - margin * 2;
   const instrLines = $('instructions').value.split('\n').map(l => l.replace(/^[•\-]\s*/, '').trim()).filter(Boolean);
   const wm = wardMapData || { buildings: [], roads: [], pois: [] };
@@ -2129,7 +2132,7 @@ async function buildRoutesPackPdf() {
   const idxMapH = pageH - margin * 2 - 8;
   const idxSvg = wardIndexSVG(lastResult.routes, wm, wardBbox, wardOutline, contentW / idxMapH);
   const idxPng = await svgToPngDataUrl(idxSvg, mm2px(contentW), mm2px(idxMapH));
-  pdf.addImage(idxPng, 'PNG', margin, margin + 8, contentW, idxMapH);
+  pdf.addImage(idxPng, 'JPEG', margin, margin + 8, contentW, idxMapH);
 
   const routeHeader = rt => {
     let y = margin;
@@ -2154,7 +2157,7 @@ async function buildRoutesPackPdf() {
     const miniSize = 55;
     const miniSvg = routeMiniSVG(rt, wardBbox, wardOutline, 1);
     const miniPng = await svgToPngDataUrl(miniSvg, mm2px(miniSize), mm2px(miniSize));
-    pdf.addImage(miniPng, 'PNG', margin, y, miniSize, miniSize);
+    pdf.addImage(miniPng, 'JPEG', margin, y, miniSize, miniSize);
     const textX = margin + miniSize + 8, textW = contentW - miniSize - 8;
     pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
     pdf.text('Instructions for volunteers', textX, y + 4);
@@ -2181,7 +2184,7 @@ async function buildRoutesPackPdf() {
     y += 6;
     const svgStr = routeSVG(rt, contentW / mapH);
     const png = await svgToPngDataUrl(svgStr, mm2px(contentW), mm2px(mapH));
-    pdf.addImage(png, 'PNG', margin, y, contentW, mapH);
+    pdf.addImage(png, 'JPEG', margin, y, contentW, mapH);
     y += mapH + 8;
 
     // c) suggested walk order
