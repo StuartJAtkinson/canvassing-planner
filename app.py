@@ -2,6 +2,7 @@
 
 Run:  uvicorn app:app --port 8000   →  http://localhost:8000
 """
+import concurrent.futures
 import hashlib
 import heapq
 import math
@@ -26,14 +27,25 @@ from shapely.ops import unary_union
 # overpass-api.de silently blocks outbound connections from Cloud Run's shared IP
 # ranges at the network level (confirmed: ConnectTimeout, never even reaches the
 # server — same query works instantly from a home connection). kumi.systems does
-# accept the connection from Cloud Run, it's just slower to answer under load
-# (confirmed: ReadTimeout at 60s, so raise the ceiling rather than switch again).
+# accept the connection from Cloud Run, it's just slower to answer under load.
 # osmnx's default "politely wait for a slot" behaviour is disabled too — a slow/
 # blocked request should fail into the existing try/except fallback, not hang
 # quietly past Cloud Run's own request timeout looking stuck to the user.
 ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass.kumi.systems/api")
-ox.settings.requests_timeout = 120
+ox.settings.requests_timeout = 60
 ox.settings.overpass_rate_limit = False
+
+# requests' own timeout is inactivity-based (gaps between reads), not a hard wall-clock
+# cap — a slowly-trickling response (or osmnx's own internal retry-on-error) can blow
+# way past it (confirmed: a "60s" request actually took 263s in production). This
+# enforces a real deadline no matter what happens underneath. The orphaned thread on
+# timeout is abandoned, not killed — Python can't kill a running thread — it just
+# finishes on its own later and its result is discarded.
+_bg_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def with_deadline(fn, *args, deadline, **kwargs):
+    return _bg_pool.submit(fn, *args, **kwargs).result(timeout=deadline)
 
 app = FastAPI()
 
@@ -65,8 +77,10 @@ def get_graph(poly):
         graphs = []
         for p in polys:
             try:
-                graphs.append(ox.graph_from_polygon(p, network_type="walk", simplify=True))
-            except Exception:
+                graphs.append(with_deadline(ox.graph_from_polygon, p,
+                                             network_type="walk", simplify=True, deadline=90))
+            except Exception as e:
+                print(f"get_graph: fetch failed for one piece: {type(e).__name__}: {e}")
                 continue  # this piece has no walkable streets of its own — not fatal
         if not graphs:
             raise ValueError("No walkable streets found in this shape.")
@@ -117,7 +131,7 @@ def fetch_landuse_blobs(poly):
     when it sits inside a ward boundary."""
     def blob(tags):
         try:
-            lu = ox.features_from_polygon(poly, tags=tags)
+            lu = with_deadline(ox.features_from_polygon, poly, tags=tags, deadline=60)
             lu = lu[lu.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]  # amenity=parking etc. can be nodes — points break turf.union client-side
             if not len(lu):
                 return None
@@ -775,7 +789,8 @@ def addresses(req: PolyReq):
     addrs = load_uprn(poly)
     if addrs is None:
         try:
-            addrs = ox.features_from_polygon(poly, tags={"addr:housenumber": True})
+            addrs = with_deadline(ox.features_from_polygon, poly,
+                                   tags={"addr:housenumber": True}, deadline=90)
         except Exception as e:
             print(f"addresses: Overpass fetch failed: {type(e).__name__}: {e}")
             addrs = None
