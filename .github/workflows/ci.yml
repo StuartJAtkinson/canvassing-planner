@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── Quality gates ─────────────────────────────────────────────────────────────
+
+  scan-secrets:
+    name: Scan for secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history — catches secrets in old commits too
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo install gitleaks /usr/local/bin/
+      - name: Scan
+        run: gitleaks detect --source . --exit-code 1
+
+  # ── Tests ─────────────────────────────────────────────────────────────────────
+
+  test:
+    name: Self-checks (test_plan.py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python test_plan.py
+
+  # ── Build validation ──────────────────────────────────────────────────────────
+
+  build:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: canvassing-planner:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Publish image (main branch only) ─────────────────────────────────────────
+  # Pushes a tagged image to ghcr.io on every merge to main.
+  # Public by default (matching a public repo) — make the package private in
+  # GitHub → Packages → canvassing-planner if needed.
+
+  publish-image:
+    name: Push to ghcr.io
+    needs: [test, build, scan-secrets]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ env.OWNER }}/canvassing-planner:latest
+            ghcr.io/${{ env.OWNER }}/canvassing-planner:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy to Cloud Run ───────────────────────────────────────────────────────
+  # Dormant until GCP_PROJECT_ID is set in repo Variables (Settings → Secrets and
+  # variables → Variables). One-time GCP setup instructions are in docs/DEPLOY.md.
+  #
+  # Variables needed (Settings → Variables):
+  #   GCP_PROJECT_ID   — the GCP project ID, e.g. canvassing-planner-prod
+  #   GCP_REGION       — e.g. europe-west2 (London)
+  #
+  # Secrets needed (Settings → Secrets):
+  #   GCP_WORKLOAD_IDENTITY_PROVIDER  — projects/NUMBER/locations/global/workloadIdentityPools/...
+  #   GCP_SERVICE_ACCOUNT             — canvassing-deployer@PROJECT.iam.gserviceaccount.com
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: [publish-image]
+    if: github.ref == 'refs/heads/main' && vars.GCP_PROJECT_ID != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for Workload Identity Federation (no stored key)
+    env:
+      REGION: ${{ vars.GCP_REGION || 'europe-west2' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push to Artifact Registry
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/canvassing-planner/canvassing-planner:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          service: canvassing-planner
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/canvassing-planner/canvassing-planner:${{ github.sha }}
+          flags: >-
+            --allow-unauthenticated
+            --min-instances=0
+            --max-instances=5
+            --memory=1Gi
+            --cpu=2
+            --concurrency=20
+            --timeout=300
+
+      - name: Print URL
+        run: echo "Deployed: ${{ steps.deploy.outputs.url }}"

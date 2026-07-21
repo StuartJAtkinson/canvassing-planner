@@ -1,0 +1,11 @@
+.git
+.venv
+.claude
+.playwright-mcp
+__pycache__
+cache
+data
+*.log
+routeview.png
+ISSUES.md
+README.md
