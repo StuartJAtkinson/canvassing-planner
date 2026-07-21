@@ -26,9 +26,12 @@ from shapely.ops import unary_union
 # The public overpass-api.de instance throttles/queues cloud-datacenter IPs far more
 # aggressively than a home connection — osmnx's default "politely wait for a slot"
 # behaviour can then hang long enough to look completely stuck to the user (confirmed:
-# a Cloud Run deploy 504'd on /addresses waiting on it). A friendlier mirror + a real
-# timeout + no polite-queue waiting means a slow/blocked request fails fast instead.
-ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass.kumi.systems/api")
+# a Cloud Run deploy 504'd on /addresses waiting on it). requests_timeout + no
+# polite-queue waiting means a slow/blocked request fails fast into the existing
+# try/except fallback instead. OVERPASS_ENDPOINT lets a mirror be swapped in without a
+# code change if overpass-api.de itself is down — kumi.systems was tried and is
+# currently unreachable, so the default stays overpass-api.de (confirmed responsive).
+ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass-api.de/api")
 ox.settings.requests_timeout = 60
 ox.settings.overpass_rate_limit = False
 
