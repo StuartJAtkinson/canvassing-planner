@@ -6,6 +6,7 @@ import hashlib
 import heapq
 import math
 import json
+import os
 import sqlite3
 import time
 from collections import Counter
@@ -21,6 +22,15 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from shapely.geometry import LineString, MultiPoint, mapping, shape
 from shapely.ops import unary_union
+
+# The public overpass-api.de instance throttles/queues cloud-datacenter IPs far more
+# aggressively than a home connection — osmnx's default "politely wait for a slot"
+# behaviour can then hang long enough to look completely stuck to the user (confirmed:
+# a Cloud Run deploy 504'd on /addresses waiting on it). A friendlier mirror + a real
+# timeout + no polite-queue waiting means a slow/blocked request fails fast instead.
+ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass.kumi.systems/api")
+ox.settings.requests_timeout = 60
+ox.settings.overpass_rate_limit = False
 
 app = FastAPI()
 
