@@ -1,0 +1,8 @@
+startStop.md
+__pycache__/
+cache/
+.venv/
+data/
+.playwright-mcp/
+.atelier-dev.log
+.claude/

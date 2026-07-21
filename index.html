@@ -1,0 +1,2265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Canvassing Route Planner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; display: flex; height: 100vh; }
+  #sidebar { width: 340px; overflow-y: auto; padding: 14px; background: #16181d; color: #e8e8e8;
+             flex-shrink: 0; display: flex; flex-direction: column; }
+  #main { flex: 1; position: relative; min-width: 0; }
+  #map { position: absolute; inset: 0; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  #stepbar { font-size: 12px; color: #888; margin-bottom: 8px; }
+  input, button, textarea { font: inherit; }
+  label { display: block; margin: 10px 0 4px; color: #aaa; font-size: 12px; }
+  .btn { display: block; width: 100%; margin-top: 10px; padding: 9px; border: 0; border-radius: 6px;
+         background: #4a9eff; color: #fff; font-weight: 600; cursor: pointer; }
+  .btn:disabled { background: #3a3d45; color: #777; cursor: default; }
+  .btn.secondary { background: #2c2f37; }
+  #wardsearch, #target { display: block; width: 100%; margin-top: 10px; padding: 9px; border: 0; border-radius: 6px;
+                          background: #2c2f37; color: #eee; font-weight: 600; }
+  #routeest { margin-top: 6px; }
+  #status { margin-top: 10px; font-size: 13px; color: #aaa; min-height: 18px; }
+  #log { font-size: 12px; color: #8fa; font-family: Consolas, monospace; max-height: 180px; overflow-y: auto; }
+  #log div { padding: 1px 0; border-bottom: 1px dotted #2a2d34; }
+  #log .t { color: #667; }
+  .warn { color: #f0b429; }
+  .chip { width: 14px; height: 14px; border-radius: 3px; display: inline-block; flex-shrink: 0; }
+  .muted { font-size: 12px; color: #888; }
+  #wardresults div { padding: 5px 8px; cursor: pointer; background: #22252c; border: 1px solid #33363e;
+                     border-top: 0; font-size: 13px; }
+  #wardresults div:hover { background: #2f3907; }
+  #addrlegend { font-size: 12px; }
+  .top-marker { font-size: 18px; text-shadow: 0 0 3px #000; }
+  #stepnav { display: flex; gap: 8px; margin: 4px 0 10px; }
+  #stepnav .btn { margin-top: 0; }
+  #progress { margin-top: 10px; }
+  #progressbar { height: 8px; background: #2c2f37; border-radius: 4px; overflow: hidden; margin-top: 4px; display: none; }
+  #progressbar div { height: 100%; width: 0%; background: #4a9eff; transition: width .2s; }
+  #instructions { width: 100%; height: 110px; margin-top: 6px; background: #22252c; color: #ddd;
+                  border: 1px solid #444; border-radius: 6px; padding: 6px; }
+  .routelink { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-top: 4px;
+               border: 1px solid #33363e; border-radius: 6px; background: #1c1f26; cursor: pointer; }
+  .routelink:hover { background: #232732; }
+  .routelink .go { color: #4a9eff; margin-left: auto; font-size: 12.5px; white-space: nowrap; }
+  .routelink .cnt { color: #888; font-size: 12px; white-space: nowrap; }
+
+  /* --- route document view: A4-styled pages over the map area --- */
+  #docview { position: absolute; inset: 0; display: none; z-index: 500; background: #3c3f46; }
+  #docmain { flex: 1; min-width: 0; height: 100%; overflow: auto; padding: 0 16px 16px; }
+  #docbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 8px;
+            margin: 0 -16px 14px; padding: 8px 16px; background: #16181d; }
+  #docbar button { width: auto; margin: 0; padding: 5px 9px; font-size: 10.5px; flex: 0 0 auto;
+                   display: flex; flex-direction: column; align-items: center; justify-content: center;
+                   gap: 2px; line-height: 1.15; white-space: nowrap; }
+  #docbar button .ico { font-size: 15px; line-height: 1; }
+  #docchoose.active { background: #4a9eff; color: #fff; }
+  #docmap path.otherroute { cursor: pointer; }
+  #docmap path.otherroute:hover { opacity: 1 !important; stroke-width: 8 !important; }
+  #otherroutetip { position: fixed; z-index: 1200; display: none; pointer-events: none;
+                    background: #16181d; color: #eee; padding: 5px 10px; border-radius: 8px;
+                    font-size: 12.5px; font-weight: 600; box-shadow: 0 3px 10px rgba(0,0,0,.4); white-space: nowrap; }
+  /* floats over the map/route page during PDF generation, so it's visible regardless of scroll */
+  #pdfstatus { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 2000;
+               display: none; background: #16181d; color: #eee; padding: 8px 18px; border-radius: 20px;
+               font-size: 13px; font-weight: 600; box-shadow: 0 3px 12px rgba(0,0,0,.5); white-space: nowrap; }
+  #docbar #docprev, #docbar #docnext { flex-shrink: 0; }
+  #docbarfns { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; justify-content: center; flex: 1; }
+  .docbarsep { width: 1px; height: 26px; background: #444; flex: 0 0 auto; }
+  /* floats below the "← Previous route" button (sidebar 340px + docbar's 16px padding),
+     staying pinned there as the page scrolls rather than living in the button row */
+  #docaddrbadge { position: fixed; top: 62px; left: 356px; z-index: 20; background: #16181d; color: #eee;
+                  padding: 6px 12px; border-radius: 14px; font-weight: 700; font-size: 13px;
+                  box-shadow: 0 3px 10px rgba(0,0,0,.4); white-space: nowrap; }
+  #docaddrbadge b { font-size: 14.5px; }
+  .page { width: 210mm; min-height: 297mm; background: #fff; color: #111; margin: 0 auto 18px;
+          padding: 14mm 16mm; box-shadow: 0 3px 14px rgba(0,0,0,.5); position: relative;
+          zoom: 1.5; }   /* on-screen preview only — print resets to true A4 scale */
+  .page h2 { font-size: 19px; margin: 0 0 2px; border-bottom: 2px solid #111; padding-bottom: 4px; }
+  .page h3 { font-size: 14px; margin: 12px 0 4px; }
+  .page .meta { color: #444; font-size: 13px; margin: 4px 0 10px; }
+  .page table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .page td, .page th { border: 1px solid #bbb; padding: 3px 6px; text-align: left; color: #111; }
+  .page td:last-child { text-align: right; }
+  .page .part { color: #b26a00; font-size: 11px; font-weight: 700; }
+  #docmap { width: 100%; overflow: hidden; border: 1px solid #ddd; }
+  #docmap svg { display: block; width: 100%; height: 100%; }
+  #docview.drawing #docmap { cursor: crosshair; }
+  /* kept off the sparse-colour gradient (red→yellow→green) so marks never blend into it */
+  #docmap path.marked { stroke: #111 !important; stroke-dasharray: 7 5; opacity: 0.95 !important; cursor: pointer; }
+  #docmap path.markedO { stroke: #2563eb !important; stroke-dasharray: 3 6; opacity: 0.95 !important; cursor: pointer; }
+  #docmap path.sphover { stroke-width: 11 !important; opacity: 1 !important; }
+  /* sparse-streets sidebar: always-visible, spans the full height of the route-page view.
+     Flex column so the PDF button floats pinned at the bottom while #sparselist scrolls. */
+  #sparsesidebar { flex: 0 0 250px; width: 250px; height: 100%; display: flex; flex-direction: column;
+                    background: #16181d; color: #ddd; border-left: 1px solid #33363e; font-size: 12px; }
+  #sparselist { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 10px 6px; }
+  #sparsesidebar #printpdf { flex-shrink: 0; margin: 0; padding: 10px; border-top: 1px solid #33363e;
+                              border-radius: 0; font-size: 12.5px; }
+  #sparsesidebar h4 { margin: 0 0 8px; font-size: 12px; color: #999; font-weight: 600; }
+  #sparsesidebar .sprow { display: flex; align-items: center; gap: 6px; padding: 4px 2px;
+                           border-bottom: 1px solid #24272e; }
+  #sparsesidebar .sprow:hover { font-weight: 700; }
+  #sparsesidebar .sprow .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sparsesidebar .sprow .num { color: #999; font-size: 10.5px; display: block; white-space: nowrap; }
+  #sparsesidebar .spico { width: 22px; height: 22px; flex-shrink: 0; border: 1px solid #33363e;
+                           border-radius: 5px; background: #22252c; color: #ddd; cursor: pointer;
+                           font-size: 12px; padding: 0; line-height: 1; }
+  #sparsesidebar .spico:hover { background: #2f333c; }
+  #sparsesidebar .spico.active-remove { background: #111; border-color: #111; color: #fff; }
+  #sparsesidebar .spico.active-orphan { background: #2563eb; border-color: #2563eb; color: #fff; }
+  #docnotes { width: 100%; height: 185mm; background: #fff; color: #111; border: 1px solid #ccc;
+              border-radius: 4px; padding: 8px; resize: none;
+              background-image: repeating-linear-gradient(#fff 0 27px, #dfe6ee 27px 28px);
+              line-height: 28px; }
+  #docnotesprint { display: none; }
+
+  /* --- print (single route document only — the full pack is a generated PDF, not browser print) --- */
+  @media print {
+    @page { size: A4 portrait; margin: 0; }
+    #sidebar, #map, #docbar, #sparsesidebar, #docaddrbadge { display: none !important; }
+    #main { position: static; }
+    body { display: block; height: auto; }
+    body.printdoc #docview { display: block !important; position: static; background: #fff; overflow: visible; }
+    body.printdoc #docmain { overflow: visible; padding: 0; }
+    body.printdoc .page { box-shadow: none; margin: 0; width: auto; min-height: auto;
+                          page-break-after: always; padding: 12mm 14mm; zoom: 1; }
+    body.printdoc #docnotes { display: none; }
+    body.printdoc #docnotesprint { display: block; min-height: 185mm;
+      background-image: repeating-linear-gradient(#fff 0 27px, #dfe6ee 27px 28px);
+      line-height: 28px; font-size: 14px; white-space: pre-wrap; }
+  }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>Canvassing Route Planner</h1>
+  <div id="stepbar"></div>
+  <div id="stepnav">
+    <button class="btn secondary" id="stepback">← Back</button>
+    <button class="btn secondary" id="resetall">🧹 Reset</button>
+    <button class="btn" id="stepnext">Next →</button>
+  </div>
+
+  <div class="step" id="step1">
+    <label>Choose an electoral ward</label>
+    <input id="wardsearch" placeholder="Search electoral ward… (Enter to list)">
+    <div id="wardresults"></div>
+  </div>
+
+  <div class="step" id="step2">
+    <label>Addresses</label>
+    <p class="muted">Every address in the ward, coloured by type. Commercial/industrial addresses are always excluded from route counts automatically.</p>
+    <button class="btn secondary" id="loadaddr">📍 Reload addresses</button>
+    <div id="addrlegend" class="muted" style="display:none;margin-top:6px;">
+      <span style="color:#e15759;">●</span> residential
+      <span style="color:#d4a017;">●</span> commercial
+      <span style="color:#888;">●</span> industrial
+      <div id="addrcounts"></div>
+    </div>
+  </div>
+
+  <div class="step" id="step3">
+    <label>Area cutout — shape the land you'll actually walk</label>
+    <p class="muted">Cut out whole areas that shouldn't be leafleted (e.g. an industrial estate or open fields).</p>
+    <button class="btn secondary" id="cutout-suggest" disabled>💡 Suggest non-residential/open land</button>
+    <button class="btn secondary" id="cutout-draw">✏️ Draw cutout (freehand)</button>
+    <button class="btn secondary" id="cutout-erase" disabled>🧽 Erase cutout (freehand)</button>
+    <button class="btn secondary" id="cutout-apply" disabled>✅ Apply cutout</button>
+    <button class="btn secondary" id="cutout-discard" disabled>🔄 Restart cutout</button>
+  </div>
+
+  <div class="step" id="step4">
+    <label>Snap to roads</label>
+    <button class="btn secondary" id="snap">🧲 Snap &amp; tidy shape</button>
+    <button class="btn secondary" id="edit-shape">✥ Tweak: off</button>
+  </div>
+
+  <div class="step" id="step5">
+    <label>Plan</label>
+    <label>Target addresses per route</label>
+    <input id="target" type="number" value="175" min="50" max="400">
+    <div id="routeest" class="muted"></div>
+    <button class="btn" id="plan" disabled>Plan routes</button>
+  </div>
+
+  <div class="step" id="step6">
+    <label>Routes</label>
+    <div id="printctl" style="display:none">
+      <label>Route instructions (top of every route's Notes page)</label>
+      <textarea id="instructions">• One leaflet per letterbox — push it fully through.
+• Skip doors marked "no junk mail / no cold callers".
+• Skip derelict or clearly empty properties.
+• Tick off each street as you finish it.
+• "PART" streets: only deliver the section shown on the map.
+• Questions or problems? Ring the organiser.</textarea>
+    </div>
+    <div id="summary"></div>
+    <button class="btn secondary" id="labelroutes" style="display:none">🏷️ Label routes (renumber, recolour, rename, restart points)</button>
+    <button class="btn secondary" id="fixoverlaps" style="display:none">🩹 Fix overlapping roads</button>
+    <button class="btn secondary" id="attachorphans" style="display:none"></button>
+    <div id="routelinks"></div>
+  </div>
+
+  <div id="progress" style="display:none">
+    <div id="progresstext" class="muted"></div>
+    <div id="progressbar"><div></div></div>
+  </div>
+  <div id="status"></div>
+  <div id="log"></div>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+  <div id="pdfstatus"></div>
+  <div id="docview">
+    <div id="docmain">
+      <div id="docbar">
+        <button class="btn secondary" id="docprev"><span class="ico">⬅️</span><span>Previous route</span></button>
+        <div id="docbarfns">
+          <button class="btn secondary" id="docsplit"><span class="ico">✂️</span><span>Split route</span></button>
+          <button class="btn" id="docsplitok" style="display:none"><span class="ico">✔</span><span>Confirm split</span></button>
+          <button class="btn secondary" id="docsplitcancel" style="display:none"><span class="ico">✖</span><span>Cancel split</span></button>
+          <span class="docbarsep"></span>
+          <button class="btn secondary" id="docmarknot"><span class="ico">▨</span><span>Not to visit</span></button>
+          <button class="btn secondary" id="docmarkother"><span class="ico">⇄</span><span>Other route</span></button>
+          <button class="btn secondary" id="doctake"><span class="ico">⊕</span><span>Take from route</span></button>
+          <span class="docbarsep"></span>
+          <button class="btn secondary" id="docclearmarks"><span class="ico">🧹</span><span>Clear marks</span></button>
+          <button class="btn secondary" id="docapply" disabled><span class="ico">✅</span><span>Apply marks</span></button>
+          <span class="docbarsep"></span>
+          <button class="btn secondary" id="docreset" disabled><span class="ico">↩</span><span>Reset route</span></button>
+          <button class="btn secondary" id="docprint"><span class="ico">🖨️</span><span>Print route</span></button>
+          <button class="btn secondary" id="docchoose"><span class="ico">🔀</span><span>Choose route</span></button>
+        </div>
+        <button class="btn secondary" id="docnext"><span class="ico">➡️</span><span>Next route</span></button>
+      </div>
+      <div id="docaddrbadge"></div>
+      <div id="docpages"></div>
+    </div>
+    <div id="sparsesidebar">
+      <div id="sparselist"></div>
+      <button class="btn secondary" id="printpdf">📕 Routes Pack PDF</button>
+    </div>
+  </div>
+</div>
+<div id="otherroutetip"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
+<script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+<script src="https://unpkg.com/leaflet.pattern@0.1.0/dist/leaflet.pattern.js"></script>
+<script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script>
+const map = L.map('map').setView([53.68, -1.49], 12); // Wakefield district
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 19, attribution: '© OpenStreetMap contributors' }).addTo(map);
+
+// diagonal black hatch — marks land about to be cut out of the working area
+const hatchPattern = new L.StripePattern({ angle: 45, color: '#000', weight: 3, spaceWeight: 6, opacity: 1 });
+hatchPattern.addTo(map);
+
+let routesLayer = L.layerGroup().addTo(map), wardsLayer = null, lastResult = null;
+let hoverLayer = L.layerGroup().addTo(map);   // invisible route footprints — hover anywhere in a route's area
+let orphansLayer = L.layerGroup().addTo(map); // streets marked "for other route", awaiting reattachment
+let orphans = [];                             // [{f: edge Feature, from: route id}]
+let lastResultBounds = null, viewingRoute = null;
+let selGeom = null;   // GeoJSON geometry to plan against (drawn polygon OR selected ward)
+const $ = id => document.getElementById(id);
+const ONS_WARDS = 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Wards_December_2024_Boundaries_UK_BGC/FeatureServer/0/query';
+
+// --- wizard state ---
+const addrRenderer = L.canvas({ padding: 0.5 });
+let addrLayer = L.layerGroup().addTo(map);
+let workingLayer = null;              // visual outline once selGeom has been eroded from the ward
+let lastAddrResult = null;
+let shapeModified = false;            // has selGeom diverged from the pristine ward? (drives /snap)
+let currentAddrCount = null;          // addresses within the current (possibly eroded) selGeom
+let draftCutout = null;               // GeoJSON geometry: land about to be cut, not yet applied
+let draftCutoutLayer = null;          // its hatch-filled Leaflet layer (draw/erase brushes edit it)
+let editingShape = false;             // vertex-edit toggle on workingLayer
+let wardLayer = null, wardGeom = null;
+
+// =============================== step machine ===============================
+const STEP_NAMES = { 1: 'Choose ward', 2: 'Addresses', 3: 'Area cutout', 4: 'Snap to roads', 5: 'Plan', 6: 'Routes' };
+let step = 1;
+
+function stepReady(n) {   // can Next leave step n?
+  if (n === 1) return !!wardGeom;
+  if (n === 5) return !!lastResult;
+  return n < 6;
+}
+
+function gotoStep(n) {
+  if (viewingRoute != null) closeDoc();
+  step = n;
+  for (let i = 1; i <= 6; i++) $('step' + i).style.display = i === n ? 'block' : 'none';
+  $('stepbar').textContent = `Step ${n} of 6 — ${STEP_NAMES[n]}`;
+  $('stepback').style.display = n > 1 ? 'block' : 'none';
+  updateNav();
+  if (n === 2 && wardGeom && !lastAddrResult) loadAddresses();
+  saveState();
+}
+
+function updateNav() {
+  $('stepnext').style.display = (step < 6 && stepReady(step)) ? 'block' : 'none';
+}
+
+$('stepnext').addEventListener('click', () => gotoStep(step + 1));
+$('stepback').addEventListener('click', () => {
+  // the sidebar Back is THE back button everywhere: from a route page it closes the
+  // page first (staying on the Routes step), only then does it walk the steps
+  if (viewingRoute != null) { closeDoc(); return; }
+  gotoStep(step - 1);
+});
+
+// Editing an earlier step invalidates everything computed after it. Ask once, then drop
+// the plan (the only expensive later-step data) so the process never overlaps itself.
+function confirmRewind() {
+  if (!lastResult) return true;
+  if (!confirm('Editing this will clear all data for steps after — proceed?')) return false;
+  clearPlanData();
+  return true;
+}
+
+function clearPlanData() {
+  lastResult = null;
+  lastResultBounds = null;
+  orphans = [];
+  updateOrphanUI();
+  routesLayer.clearLayers();
+  hoverLayer.clearLayers();
+  if (viewingRoute != null) closeDoc();
+  $('routelinks').innerHTML = '';
+  $('summary').innerHTML = '';
+  $('log').innerHTML = '';
+  $('printctl').style.display = 'none';
+  $('labelroutes').style.display = 'none';
+  $('fixoverlaps').style.display = 'none';
+  addrLayer.addTo(map);   // render() hides the dots — bring them back for the wizard steps
+  updateNav();
+  saveState();
+}
+
+// =============================== persistence ===============================
+// Everything the wizard knows, saved after every step transition and mutation, so a
+// refresh resumes exactly where you were. Reset (top right) is the only way to wipe it.
+function saveState() {
+  try {
+    const result = lastResult
+      ? JSON.parse(JSON.stringify(lastResult,
+          (k, v) => (k === 'layer' || k === 'hoverLayer' || k === 'footprint' || k === 'mapdata') ? undefined : v))
+      : null;
+    localStorage.setItem('state', JSON.stringify({
+      step, wardGeom, selGeom, shapeModified, label: $('wardsearch').value, result, orphans,
+    }));
+  } catch (e) { /* quota — a huge ward may not fit; losing persistence is fine */ }
+}
+
+function restoreState() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem('state') || 'null'); } catch (e) {}
+  // migrate the previous two-key format so an existing saved plan isn't lost
+  if (!st) {
+    try {
+      const plan = JSON.parse(localStorage.getItem('lastPlan') || 'null');
+      const ctx = JSON.parse(localStorage.getItem('lastPlanCtx') || 'null');
+      if (plan && ctx) st = { step: 6, wardGeom: ctx.wardGeom, selGeom: ctx.selGeom,
+                              shapeModified: ctx.shapeModified, label: ctx.label, result: plan };
+      localStorage.removeItem('lastPlan'); localStorage.removeItem('lastPlanCtx');
+    } catch (e) {}
+  }
+  if (!st || !st.wardGeom) { gotoStep(1); return; }
+  try {
+    wardGeom = st.wardGeom;
+    selGeom = st.selGeom || st.wardGeom;
+    shapeModified = !!st.shapeModified;
+    $('wardsearch').value = st.label || '';
+    wardLayer = L.geoJSON(wardGeom, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
+    redrawWorking();
+    map.fitBounds(wardLayer.getBounds());
+    $('plan').disabled = false;
+    orphans = st.orphans || [];
+    if (st.result) { render(st.result, { quiet: true }); prepareRoutes(st.result); }
+    gotoStep(Math.min(st.step || 1, st.result ? 6 : 5));
+    if (selGeom) loadAddresses();  // background — re-enables Suggest + the live estimate
+    $('status').textContent = 'Previous session restored — 🧹 Reset (top right) for a blank slate.';
+  } catch (e) {
+    localStorage.removeItem('state');
+    gotoStep(1);
+  }
+}
+
+$('resetall').addEventListener('click', () => {
+  localStorage.removeItem('state');
+  location.reload();
+});
+
+// =============================== ward search ===============================
+$('wardsearch').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return;
+  const q = e.target.value.trim().replace(/'/g, "''");
+  if (q.length < 2) return;
+  $('wardresults').innerHTML = '<div>Searching…</div>';
+  try {
+    const url = `${ONS_WARDS}?where=UPPER(WD24NM) LIKE UPPER('%25${encodeURIComponent(q)}%25')`
+      + '&outFields=*&returnGeometry=false&resultRecordCount=12&f=json';
+    const j = await (await fetch(url)).json();
+    $('wardresults').innerHTML = '';
+    for (const f of j.features || []) {
+      const a = f.attributes, lad = a.LAD24NM || a.LAD24CD || '';
+      const d = document.createElement('div');
+      d.textContent = a.WD24NM + (lad ? ` (${lad})` : '');
+      d.onclick = () => selectWard(a.WD24CD, d.textContent);
+      $('wardresults').appendChild(d);
+    }
+    if (!(j.features || []).length) $('wardresults').innerHTML = '<div>No wards match.</div>';
+  } catch { $('wardresults').innerHTML = '<div>Ward service unavailable.</div>'; }
+});
+
+async function selectWard(code, label) {
+  if (!confirmRewind()) return;
+  $('wardresults').innerHTML = '';
+  $('wardsearch').value = label;
+  if (wardLayer) { map.removeLayer(wardLayer); wardLayer = null; }
+  const url = `${ONS_WARDS}?where=WD24CD='${code}'&outFields=WD24NM&outSR=4326&f=geojson`;
+  const j = await (await fetch(url)).json();
+  const feat = j.features[0];
+  wardGeom = feat.geometry;
+  selGeom = wardGeom;
+  wardLayer = L.geoJSON(feat, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
+  map.fitBounds(wardLayer.getBounds());
+  $('plan').disabled = false;
+  resetWizard();
+  redrawWorking();          // shade the whole ward immediately — cutouts erase holes in this
+  $('status').textContent = `Ward "${label}" selected.`;
+  gotoStep(2);              // auto-advance; addresses load on entry
+}
+
+function resetWizard() {
+  addrLayer.clearLayers().addTo(map);
+  if (workingLayer) { map.removeLayer(workingLayer); workingLayer = null; }
+  clearDraftCutout();
+  $('addrlegend').style.display = 'none';
+  $('addrcounts').textContent = '';
+  $('routeest').textContent = '';
+  lastAddrResult = null;
+  currentAddrCount = null;
+  shapeModified = false;
+  editingShape = false;
+  $('edit-shape').textContent = '✥ Tweak: off';
+  $('cutout-suggest').disabled = true;
+}
+
+// --- ward boundaries: always on (ONS Open Geography, Dec 2024 wards) ---
+let wardsTimer = null;
+async function loadWardBoundaries() {
+  if (map.getZoom() < 10) { if (wardsLayer) { map.removeLayer(wardsLayer); wardsLayer = null; } return; }
+  const b = map.getBounds();
+  const url = ONS_WARDS
+    + `?where=1%3D1&geometry=${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`
+    + '&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects'
+    + '&outFields=WD24NM&outSR=4326&f=geojson';
+  try {
+    const j = await (await fetch(url)).json();
+    if (wardsLayer) map.removeLayer(wardsLayer);
+    wardsLayer = L.geoJSON(j, { style: { color: '#9b59b6', weight: 2, fill: false, dashArray: '6 4' },
+      onEachFeature: (f, l) => l.bindTooltip(f.properties.WD24NM, { sticky: true }) }).addTo(map);
+  } catch { /* boundary service down — map still usable */ }
+}
+map.on('moveend', () => { clearTimeout(wardsTimer); wardsTimer = setTimeout(loadWardBoundaries, 400); });
+loadWardBoundaries();
+
+// =============================== working shape ===============================
+function redrawWorking() {
+  if (workingLayer) map.removeLayer(workingLayer);
+  // interactive:false — a filled polygon otherwise steals the mousedown that the
+  // freehand cutout tool needs, since the working shape covers most of the map.
+  workingLayer = L.geoJSON(selGeom, { style: { color: '#f28e2b', weight: 4, fillOpacity: 0.08, fillColor: '#f28e2b', interactive: false } }).addTo(map);
+  if (editingShape) enableShapeEditing();
+}
+
+function enableShapeEditing() {
+  workingLayer.eachLayer(l => {
+    l.pm.enable();
+    l.on('pm:edit', () => { selGeom = l.toGeoJSON().geometry; shapeModified = true; recomputeAddrCount(); saveState(); });
+  });
+}
+
+// --- draft cutout: hatch-shaded "erase mask" — one accumulating shape ---
+function clearDraftCutout() {
+  if (draftCutoutLayer) { map.removeLayer(draftCutoutLayer); draftCutoutLayer = null; }
+  draftCutout = null;
+  $('cutout-apply').disabled = true;
+  $('cutout-discard').disabled = true;
+  $('cutout-erase').disabled = true;
+}
+
+function showDraftCutout(geom) {
+  if (draftCutoutLayer) map.removeLayer(draftCutoutLayer);
+  draftCutout = geom;
+  draftCutoutLayer = L.geoJSON(geom, { style: { fillPattern: hatchPattern, fillOpacity: 1, color: '#000', weight: 2, interactive: false } }).addTo(map);
+  $('cutout-apply').disabled = false;
+  $('cutout-discard').disabled = false;
+  $('cutout-erase').disabled = false;
+}
+
+// recount addresses inside the current working shape and refresh the estimate
+function recomputeAddrCount() {
+  if (!lastAddrResult) { currentAddrCount = null; }
+  else {
+    currentAddrCount = lastAddrResult.points.features
+      .filter(f => turf.booleanPointInPolygon(f, selGeom)).length;
+  }
+  updateRouteEstimate();
+}
+
+function updateRouteEstimate() {
+  if (!currentAddrCount) { $('routeest').textContent = ''; return; }
+  const target = +$('target').value || 175;
+  const low = Math.max(1, Math.floor(currentAddrCount / (target * 1.2)));
+  const high = Math.max(low, Math.floor(currentAddrCount / (target * 0.8)));
+  $('routeest').textContent = `${currentAddrCount} addresses -> ~${low === high ? low : low + '-' + high} routes`;
+}
+$('target').addEventListener('input', updateRouteEstimate);
+
+// =============================== cutout tools ===============================
+// Hand-rolled freehand with plain Leaflet mouse events (Geoman Freehand is PRO-only).
+$('cutout-draw').addEventListener('click', () => {
+  if (!selGeom || !confirmRewind()) return;
+  map.pm.disableDraw();
+  map.dragging.disable();
+  map.getContainer().style.cursor = 'crosshair';
+  $('status').textContent = 'Press and drag on the map to draw the area to cut out, release to finish.';
+
+  map.once('mousedown', start => {
+    const points = [start.latlng];
+    const liveLayer = L.polygon(points, {
+      color: '#000', weight: 2, fillPattern: hatchPattern, fillOpacity: 1, interactive: false,
+    }).addTo(map);
+
+    const onMove = move => { points.push(move.latlng); liveLayer.setLatLngs(points); };
+    map.on('mousemove', onMove);
+
+    map.once('mouseup', () => {
+      map.off('mousemove', onMove);
+      map.removeLayer(liveLayer);
+      map.dragging.enable();
+      map.getContainer().style.cursor = '';
+      if (points.length >= 3) {
+        const newGeom = L.polygon(points).toGeoJSON().geometry;
+        const merged = draftCutout
+          ? turf.union(turf.featureCollection([turf.feature(draftCutout), turf.feature(newGeom)])).geometry
+          : newGeom;
+        showDraftCutout(merged);
+        $('status').textContent = 'Cutout stroke added — draw more, or Apply.';
+      } else {
+        $('status').textContent = 'Stroke too short — try again.';
+      }
+    });
+  });
+});
+
+$('cutout-erase').addEventListener('click', () => {
+  if (!draftCutout) { $('status').textContent = 'Nothing to erase yet — draw or suggest a cutout first.'; return; }
+  if (!confirmRewind()) return;
+  map.pm.disableDraw();
+  map.dragging.disable();
+  map.getContainer().style.cursor = 'crosshair';
+  $('status').textContent = 'Press and drag to erase part of the cutout mask, release to finish.';
+
+  map.once('mousedown', start => {
+    const points = [start.latlng];
+    const liveLayer = L.polygon(points, {
+      color: '#fff', weight: 2, dashArray: '4 4', fillOpacity: 0, interactive: false,
+    }).addTo(map);
+
+    const onMove = move => { points.push(move.latlng); liveLayer.setLatLngs(points); };
+    map.on('mousemove', onMove);
+
+    map.once('mouseup', () => {
+      map.off('mousemove', onMove);
+      map.removeLayer(liveLayer);
+      map.dragging.enable();
+      map.getContainer().style.cursor = '';
+      if (points.length >= 3 && draftCutout) {
+        const eraseGeom = L.polygon(points).toGeoJSON().geometry;
+        const result = turf.difference(turf.featureCollection([turf.feature(draftCutout), turf.feature(eraseGeom)]));
+        if (result) showDraftCutout(result.geometry);
+        else clearDraftCutout();  // erased the whole mask
+        $('status').textContent = 'Erased from cutout — draw/erase more, or Apply.';
+      } else {
+        $('status').textContent = 'Stroke too short — try again.';
+      }
+    });
+  });
+});
+
+$('cutout-suggest').addEventListener('click', () => {
+  if (!lastAddrResult || !confirmRewind()) return;
+  const geoms = [lastAddrResult.commercial_geom, lastAddrResult.industrial_geom, lastAddrResult.field_geom].filter(Boolean);
+  if (!geoms.length) return;
+  let suggestion = turf.feature(geoms[0]);
+  for (let i = 1; i < geoms.length; i++)
+    suggestion = turf.union(turf.featureCollection([suggestion, turf.feature(geoms[i])]));
+  showDraftCutout(draftCutout
+    ? turf.union(turf.featureCollection([turf.feature(draftCutout), suggestion])).geometry
+    : suggestion.geometry);
+  $('status').textContent = 'Suggested cutout added — draw or erase to adjust, then Apply.';
+});
+
+$('cutout-apply').addEventListener('click', () => {
+  if (!draftCutout || !selGeom || !confirmRewind()) return;
+  const result = turf.difference(turf.featureCollection([turf.feature(selGeom), turf.feature(draftCutout)]));
+  if (result) {
+    selGeom = result.geometry;
+    shapeModified = true;
+    redrawWorking();
+    recomputeAddrCount();
+    saveState();
+  }
+  clearDraftCutout();
+});
+
+$('cutout-discard').addEventListener('click', clearDraftCutout);
+
+// =============================== snap & tweak ===============================
+$('edit-shape').addEventListener('click', () => {
+  if (!workingLayer) return;
+  if (!editingShape && !confirmRewind()) return;
+  editingShape = !editingShape;
+  $('edit-shape').textContent = `✥ Tweak: ${editingShape ? 'on' : 'off'}`;
+  if (editingShape) enableShapeEditing();
+  else workingLayer.eachLayer(l => l.pm.disable());
+});
+
+// snap to roads → expand ~5 m out → straighten edges, one command. The 5 m margin means
+// the Douglas-Peucker straightening (keeps the outermost point of each curve, drops the
+// small in-between wiggles) never clips houses sitting right on the boundary.
+$('snap').addEventListener('click', async () => {
+  if (!wardGeom) return;
+  if (!(selGeom && (selGeom.type === 'Polygon' || selGeom.type === 'MultiPolygon') && shapeModified)) {
+    $('status').textContent = 'Nothing to snap yet — the shape is still the pristine ward boundary.';
+    return;
+  }
+  if (!confirmRewind()) return;
+  const btn = $('snap');
+  btn.disabled = true; btn.textContent = '⏳ Snapping…';
+  try {
+    const before = (JSON.stringify(selGeom).match(/\[/g) || []).length;
+    const r = await fetch('/snap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polygon: wardGeom, geometries: [selGeom] }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    const buffed = turf.buffer(turf.feature(j.geometries[0]), 5, { units: 'meters' });
+    const simp = turf.simplify(buffed, { tolerance: 0.00008, highQuality: true });
+    selGeom = simp.geometry;
+    const after = (JSON.stringify(selGeom).match(/\[/g) || []).length;
+    shapeModified = true;
+    redrawWorking();
+    recomputeAddrCount();
+    saveState();
+    $('status').textContent = `Shape snapped, expanded ~5 m and straightened (~${before} → ~${after} points) — Tweak the vertices if needed.`;
+  } catch (err) {
+    $('status').textContent = '❌ ' + err.message;
+  }
+  btn.disabled = false; btn.textContent = '🧲 Snap & tidy shape';
+});
+
+// =============================== addresses ===============================
+async function loadAddresses() {
+  if (!selGeom) return;
+  const btn = $('loadaddr');
+  btn.disabled = true; btn.textContent = '⏳ Loading…';
+  try {
+    const r = await fetch('/addresses', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polygon: selGeom }),
+    });
+    const j = await r.json();
+    lastAddrResult = j;
+    const COLOR = { residential: '#e15759', commercial: '#d4a017', industrial: '#888' };
+    addrLayer.clearLayers();
+    L.geoJSON(j.points, {
+      pointToLayer: (f, latlng) => L.circleMarker(latlng, {
+        radius: 3, color: COLOR[f.properties.category], fillColor: COLOR[f.properties.category],
+        fillOpacity: 0.8, weight: 0, renderer: addrRenderer,
+      }),
+    }).addTo(addrLayer);
+    $('addrlegend').style.display = 'block';
+    $('addrcounts').textContent =
+      `${j.counts.residential} residential, ${j.counts.commercial} commercial, ${j.counts.industrial} industrial`;
+    $('cutout-suggest').disabled = !(j.commercial_geom || j.industrial_geom || j.field_geom);
+    recomputeAddrCount();
+  } catch (err) {
+    $('status').textContent = '❌ ' + err.message;
+  }
+  btn.disabled = false; btn.textContent = '📍 Reload addresses';
+}
+$('loadaddr').addEventListener('click', loadAddresses);
+
+// =============================== plan ===============================
+function log(m, t) {
+  const d = document.createElement('div');
+  d.innerHTML = `<span class="t">[${t}s]</span> ${m}`;
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+// progress: text always; the bar only when the stage is enumerable (frac != null)
+function showProgress(text, frac) {
+  $('progress').style.display = 'block';
+  $('progresstext').textContent = text;
+  const bar = $('progressbar');
+  if (frac == null) { bar.style.display = 'none'; }
+  else { bar.style.display = 'block'; bar.firstElementChild.style.width = `${Math.round(frac * 100)}%`; }
+}
+function hideProgress() { $('progress').style.display = 'none'; }
+
+// --- ward-wide vector-map data (buildings + roads), fetched once per planning shape ---
+let wardMapData = null, wardMapPromise = null;
+function fetchWardMap() {
+  if (!wardMapPromise) {
+    wardMapPromise = fetch('/wardmap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ polygon: selGeom }),
+    }).then(r => r.json()).then(j => { wardMapData = j; return j; })
+      .catch(() => { wardMapData = { buildings: [], roads: [] }; return wardMapData; });
+  }
+  return wardMapPromise;
+}
+
+// pre-compute everything the route documents need, right after planning: one ward-wide
+// buildings/roads fetch, then each route's footprint + hover zone (enumerable → bar)
+async function prepareRoutes(res) {
+  showProgress('Fetching buildings & roads for the route maps…', null);
+  await fetchWardMap();
+  const n = res.routes.length;
+  for (let i = 0; i < n; i++) {
+    if (lastResult !== res) { hideProgress(); return; }   // superseded by a newer plan
+    const rt = res.routes[i];
+    if (!rt.footprint) rt.footprint = computeFootprint(rt);
+    if (!rt.hoverLayer) {
+      rt.hoverLayer = L.geoJSON(rt.footprint, { style: { stroke: false, fill: true, fillOpacity: 0 } })
+        .bindTooltip(`Route ${rt.num || rt.id}${rt.name ? ': ' + rt.name : ''} — ${routeLabel(rt)}`, { sticky: true })
+        .on('mouseover', () => setRouteMode(rt.id))
+        .on('mouseout', () => setRouteMode(null))
+        .on('click', () => openDoc(rt))
+        .addTo(hoverLayer);
+    }
+    showProgress(`Preparing route maps… ${i + 1}/${n}`, (i + 1) / n);
+    await new Promise(r => setTimeout(r, 0));   // keep the UI responsive
+  }
+  hideProgress();
+}
+
+$('plan').addEventListener('click', async () => {
+  if (!selGeom || !confirmRewind()) return;
+  $('plan').disabled = true;
+  $('log').innerHTML = '';
+  $('status').textContent = '⏳ Planning…';
+  try {
+    const r = await fetch('/plan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        polygon: selGeom,
+        target: +$('target').value || 175,
+      }),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line) continue;
+        const j = JSON.parse(line);
+        if (j.msg) log(j.msg, j.t);
+        else if (j.progress) showProgress(`${j.progress.label}… ${j.progress.done}/${j.progress.total}`,
+                                          j.progress.done / j.progress.total);
+        else if (j.error) throw new Error(j.error);
+        else if (j.result) { render(j.result); gotoStep(6); prepareRoutes(j.result); }
+      }
+    }
+  } catch (err) {
+    $('status').textContent = '❌ ' + err.message;
+    hideProgress();
+  }
+  $('plan').disabled = false;
+});
+
+// =============================== routes on the map ===============================
+function routeStyle(rt, dim) {
+  return f => {
+    const isMain = f.properties.name === rt.main;
+    if (dim) return { color: '#888', weight: isMain ? 6 : 3, opacity: 0.35 };
+    return isMain ? { color: rt.color, weight: 10, opacity: 1 } : { color: rt.color, weight: 4, opacity: 0.8 };
+  };
+}
+function setRouteMode(activeId) {
+  if (!lastResult) return;
+  for (const rt of lastResult.routes) {
+    if (rt.layer) rt.layer.setStyle(routeStyle(rt, activeId != null && rt.id !== activeId));
+  }
+}
+
+function routeLabel(rt) {
+  return `${rt.addresses} addresses` + (rt.area_km2 ? ` · ${rt.area_km2} km²` : '')
+    + (rt.walk_km ? ` · ${rt.walk_km} km walk` : '');
+}
+
+// rough volunteer time: walking at 4 km/h plus ~15 s per letterbox
+function routeTime(rt) {
+  if (!rt.walk_km) return '';
+  const mins = Math.round(rt.walk_km / 4 * 60 + rt.addresses * 0.25);
+  return mins >= 60 ? `≈${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}` : `≈${mins} min`;
+}
+
+// buffered outline of the route's own streets — the route's "area" (used for the hover
+// zone, the document map's clip, and /routemap); hull fallback if the buffer math fails
+function computeFootprint(rt) {
+  try {
+    const buf = turf.buffer(rt.edges, 75, { units: 'meters' });
+    return buf.features.length > 1 ? turf.union(buf) : buf.features[0];
+  } catch (e) {
+    return turf.convex(rt.edges) || turf.bboxPolygon(turf.bbox(rt.edges));
+  }
+}
+
+function render(res, opts = {}) {
+  lastResult = res;
+  routesLayer.clearLayers();
+  hoverLayer.clearLayers();
+  map.removeLayer(addrLayer);   // the dots did their job during the wizard
+  $('status').textContent = '';
+  $('summary').innerHTML =
+    `<p><b>${res.routes.length} routes · ${res.total_addresses} addresses</b>` +
+    (res.estimated ? ' <span class="warn">(estimated from street length — no address data here)</span>' : '') +
+    `</p><p class="muted">Address source: ${res.address_source || '—'} · hover a route (line or area) to highlight it, click a link to open its page.</p>`;
+  $('routelinks').innerHTML = '';
+  res.routes.forEach((rt, i) => {
+    rt.num = i + 1;                          // display number — always sequential; rt.id stays the stable key
+    rt.color = COLORS[i % COLORS.length];    // realign colours to list order on every render
+    rt.name = rt.main || '';
+    rt.hoverLayer = null;   // hoverLayer group was just cleared — stale refs would block re-adding
+    rt.layer = L.geoJSON(rt.edges, { style: routeStyle(rt, false) }).addTo(routesLayer);
+    rt.layer.on('mouseover', () => setRouteMode(rt.id));
+    rt.layer.on('mouseout', () => setRouteMode(null));
+    if (rt.top) {
+      L.marker([rt.top.lat, rt.top.lon], {
+        icon: L.divIcon({ className: '', html: '<div class="top-marker">▲</div>', iconSize: [20, 20], iconAnchor: [10, 16] }),
+      }).bindTooltip(`Route ${rt.num}: start here, walk downhill`, { sticky: true }).addTo(routesLayer);
+    }
+    const link = document.createElement('div');
+    link.className = 'routelink';
+    link.innerHTML =
+      `<span class="chip" style="background:${rt.color}"></span>` +
+      `<span>Route ${rt.num}${rt.name ? ': ' + rt.name : ''}</span>` +
+      `<span class="cnt">${rt.addresses} addr</span><span class="go">page →</span>`;
+    link.addEventListener('mouseenter', () => setRouteMode(rt.id));
+    link.addEventListener('mouseleave', () => setRouteMode(null));
+    link.addEventListener('click', () => openDoc(rt));
+    $('routelinks').appendChild(link);
+  });
+  lastResultBounds = null;
+  for (const rt of res.routes) {
+    lastResultBounds = lastResultBounds ? lastResultBounds.extend(rt.layer.getBounds()) : rt.layer.getBounds();
+  }
+  $('printctl').style.display = 'block';
+  $('labelroutes').style.display = 'block';
+  $('fixoverlaps').style.display = 'block';
+  updateOrphanUI();
+  updateNav();
+  if (!opts.quiet) saveState();
+}
+
+// dashed grey overlay of streets awaiting a new route + the attach button's count
+function updateOrphanUI() {
+  orphansLayer.clearLayers();
+  for (const o of orphans) {
+    const src = lastResult && lastResult.routes.find(r => r.id === o.from);
+    L.geoJSON(o.f, { style: { color: '#7c3aed', weight: 4, dashArray: '6 6', opacity: 0.85 } })
+      .bindTooltip(`Orphaned from ${src ? 'Route ' + (src.num || src.id) : 'a removed route'} — awaiting "Attach orphaned streets"`, { sticky: true })
+      .addTo(orphansLayer);
+  }
+  const b = $('attachorphans');
+  b.style.display = orphans.length ? 'block' : 'none';
+  b.textContent = `🧷 Attach orphaned streets (${orphans.length})`;
+}
+
+// attach each orphaned segment to the nearest route that ISN'T the one that orphaned it,
+// then replan every route that gained streets
+$('attachorphans').addEventListener('click', async () => {
+  if (!orphans.length || !lastResult) return;
+  $('status').textContent = '⏳ Attaching orphaned streets to their nearest routes…';
+  const latScale = Math.cos((orphans[0].f.geometry.coordinates[0][1]) * Math.PI / 180);
+  const affected = new Set();
+  for (const o of orphans) {
+    const mid = o.f.geometry.coordinates[Math.floor(o.f.geometry.coordinates.length / 2)];
+    let best = null, bestD = Infinity;
+    for (const rt of lastResult.routes) {
+      if (rt.id === o.from) continue;
+      for (const f of rt.edges.features) {
+        for (const c of f.geometry.coordinates) {
+          const d = ((c[0] - mid[0]) * latScale) ** 2 + (c[1] - mid[1]) ** 2;
+          if (d < bestD) { bestD = d; best = rt; }
+        }
+      }
+    }
+    if (best) { best.edges.features.push(o.f); affected.add(best); }
+  }
+  orphans = [];
+  for (const rt of affected) {
+    recomputeStreets(rt);
+    await rerouteWalk(rt);
+    rt.footprint = null;   // grew — recompute in the prepare pass
+  }
+  render(lastResult);
+  prepareRoutes(lastResult);
+  $('status').textContent = `Attached streets to ${affected.size} route(s) and replanned them.`;
+});
+
+// after splits/marks/takes, list order + names + start points can all drift — this
+// puts every route back in step: sequential numbers (via render), recoloured to match,
+// named after its own largest street, and a start point recomputed from the terrain
+$('labelroutes').addEventListener('click', async () => {
+  if (!lastResult) return;
+  $('labelroutes').disabled = true;
+  $('status').textContent = '⏳ Labelling routes…';
+  const biggestNamed = r => (r.streets.find(s => !s.name.startsWith('(')) || {}).name || null;
+  for (const rt of lastResult.routes) {
+    recomputeStreets(rt);
+    rt.main = biggestNamed(rt);
+    rt.name = rt.main || '';
+    await rerouteWalk(rt, true);   // true = recompute the start point from elevation, not the old marker
+  }
+  render(lastResult);
+  prepareRoutes(lastResult);
+  $('labelroutes').disabled = false;
+  $('status').textContent = `Labelled ${lastResult.routes.length} route(s) — numbers, colours, names and start points refreshed.`;
+});
+
+// a road (u|v|k edge) can end up in more than one route's edge list — same address
+// counted twice. Keep it on whichever route currently has the most addresses, drop it
+// from the rest, and replan whatever changed.
+$('fixoverlaps').addEventListener('click', async () => {
+  if (!lastResult) return;
+  $('fixoverlaps').disabled = true;
+  $('status').textContent = '⏳ Checking for overlapping roads…';
+  const byKey = new Map();   // "u|v|k" → [{rt, f}, ...]
+  for (const rt of lastResult.routes) {
+    for (const f of rt.edges.features) {
+      const key = `${f.properties.u}|${f.properties.v}|${f.properties.k}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push({ rt, f });
+    }
+  }
+  const touched = new Set();
+  let removed = 0;
+  for (const entries of byKey.values()) {
+    if (entries.length < 2) continue;
+    entries.sort((a, b) => b.rt.addresses - a.rt.addresses);   // biggest route keeps the road
+    for (let i = 1; i < entries.length; i++) {
+      const { rt, f } = entries[i];
+      rt.edges.features = rt.edges.features.filter(x => x !== f);
+      touched.add(rt);
+      removed++;
+    }
+  }
+  if (!removed) {
+    $('fixoverlaps').disabled = false;
+    $('status').textContent = 'No overlapping roads found.';
+    return;
+  }
+  let dissolved = 0;
+  for (const rt of touched) {
+    if (!rt.edges.features.length) {
+      lastResult.routes = lastResult.routes.filter(r => r !== rt);
+      dissolved++;
+      continue;
+    }
+    recomputeStreets(rt);
+    await rerouteWalk(rt);
+    rt.footprint = null;
+  }
+  render(lastResult);
+  prepareRoutes(lastResult);
+  $('fixoverlaps').disabled = false;
+  $('status').textContent = `Removed ${removed} duplicate road segment(s) from the smaller of their routes` +
+    (dissolved ? ` (${dissolved} route(s) left empty and dissolved)` : '') + '.';
+});
+
+// =============================== route document (page) ===============================
+const MM = 96 / 25.4;               // CSS px per mm
+let markedEdges = new Map();        // data-e key → 'remove' | 'orphan', applied in one go
+let toolJustFinished = 0;           // timestamp guard: swallow the click a drag-tool's pointerup leaves behind
+let chooseMode = false;             // "Choose route": other routes shown in colour, this one greyed, click to jump
+
+async function openDoc(rt) {
+  viewingRoute = rt.id;
+  if (rt.notes === undefined) rt.notes = '';
+  markedEdges.clear();
+  pendingTakes = [];
+  pendingSplit = null;
+  chooseMode = false;
+  $('docchoose').classList.remove('active');
+  $('docsplitok').style.display = 'none';
+  $('docsplitcancel').style.display = 'none';
+  $('docapply').disabled = true;
+  $('docview').classList.remove('drawing');
+  $('map').style.display = 'none';
+  $('docview').style.display = 'flex';
+  $('docmain').scrollTop = 0;
+  updateDocNav(rt);
+  await refreshDoc(rt);
+}
+
+function updateDocNav(rt) {
+  const idx = lastResult ? lastResult.routes.findIndex(r => r.id === rt.id) : -1;
+  $('docprev').disabled = idx <= 0;
+  $('docnext').disabled = idx < 0 || idx >= lastResult.routes.length - 1;
+}
+
+$('docprev').addEventListener('click', () => {
+  const rt = currentRoute();
+  const idx = lastResult.routes.findIndex(r => r.id === rt.id);
+  if (idx > 0) openDoc(lastResult.routes[idx - 1]);
+});
+$('docnext').addEventListener('click', () => {
+  const rt = currentRoute();
+  const idx = lastResult.routes.findIndex(r => r.id === rt.id);
+  if (idx < lastResult.routes.length - 1) openDoc(lastResult.routes[idx + 1]);
+});
+
+// (re)build the document pages + vector map for rt, without touching the marking toggle
+async function refreshDoc(rt) {
+  $('docreset').disabled = !rt.orig;
+  updateDocNav(rt);
+  updateAddrBadge();
+  buildDocPages(rt);
+  if (!rt.footprint) rt.footprint = computeFootprint(rt);
+  if (!wardMapData) {
+    $('docmap').innerHTML = '<p style="padding:20px;color:#888">Fetching buildings & roads…</p>';
+    await fetchWardMap();
+  }
+  if (viewingRoute === rt.id) renderDocMap(rt);
+  buildSparseSidebar(rt);   // always visible — ratios refresh after every edit
+}
+
+function closeDoc() {
+  viewingRoute = null;
+  $('docview').style.display = 'none';
+  $('map').style.display = 'block';
+  map.invalidateSize();
+  if (lastResultBounds) map.fitBounds(lastResultBounds, { padding: [20, 20] });
+}
+
+function currentRoute() {
+  return lastResult ? lastResult.routes.find(r => r.id === viewingRoute) : null;
+}
+
+function buildDocPages(rt) {
+  $('docpages').innerHTML =
+    `<div class="page" id="docpage1">
+      <h2><span class="chip" style="background:${rt.color};margin-right:6px"></span>Leafleting Route ${rt.num || rt.id}${rt.name ? ': ' + rt.name : ''}</h2>
+      <p class="meta">${routeLabel(rt)}${routeTime(rt) ? ' · ' + routeTime(rt) : ''}` +
+      (rt.main ? ` · Main road: <b>${rt.main}</b>` : '') +
+      (rt.top ? ' · ▲ start at the top, walk downhill' : '') + `</p>
+      <div id="docmap"></div>
+      <div id="doccontent">
+        <h3>Streets</h3>
+        <table><tr><th>Street</th><th>Addresses</th><th>Done ✓</th></tr>` +
+        rt.streets.map(s =>
+          `<tr><td>${s.name}${s.partial ? ' <span class="part">PART — only the section on the map</span>' : ''}</td><td>${s.addresses}</td><td></td></tr>`
+        ).join('') +
+        `</table>
+        <h3>Suggested walk order</h3>
+        <p style="font-size:12.5px">${rt.order.join(' → ')}</p>
+      </div>
+    </div>
+    <div class="page" id="docpage2">
+      <h3>Instructions for volunteers</h3>
+      <ul style="font-size:13px">` +
+      $('instructions').value.split('\n').map(l => `<li>${l.replace(/^[•\-]\s*/, '')}</li>`).join('') +
+      `</ul>
+      <h3>Notes</h3>
+      <textarea id="docnotes" placeholder="Anything the volunteer should know — gate codes, dogs, blocks of flats, parking…"></textarea>
+      <div id="docnotesprint"></div>
+    </div>`;
+  $('docnotes').value = rt.notes;
+  $('docnotes').addEventListener('input', e => { rt.notes = e.target.value; $('docnotesprint').textContent = e.target.value; });
+  $('docnotes').addEventListener('change', saveState);
+  $('docnotesprint').textContent = rt.notes;
+}
+
+// --- vector map: SVG from the ward-wide data — full-detail inside the route's area,
+// regular map at 80% opacity outside it, coordinate grid at the edges, labelled streets ---
+let docProj = null;   // current doc SVG projection — the area-marking tools invert through it
+
+// opposing halo colour for text set in `hex` — dark shadow on light text, light-grey shadow on dark text
+function contrastShadow(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const lum = 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255);
+  return lum > 150 ? '#222' : '#ddd';
+}
+
+function routeSVG(rt, aspect) {
+  const fp = rt.footprint.geometry || rt.footprint;
+  let [minX, minY, maxX, maxY] = turf.bbox(rt.footprint);
+  // small breathing margin, then grow ONE axis until the view's aspect matches the box
+  // the page layout gave us — the map then fills its box exactly (no letterboxing),
+  // spending the spare direction on extra surrounding context
+  let dx = maxX - minX, dy = maxY - minY;
+  minX -= dx * 0.06; maxX += dx * 0.06; minY -= dy * 0.06; maxY += dy * 0.06;
+  dx = maxX - minX; dy = maxY - minY;
+  const latScale = Math.cos((minY + maxY) / 2 * Math.PI / 180);
+  const target = aspect || 1.3;
+  if ((dx * latScale) / dy < target) {
+    const add = (dy * target / latScale - dx) / 2;
+    minX -= add; maxX += add;
+  } else {
+    const add = (dx * latScale / target - dy) / 2;
+    minY -= add; maxY += add;
+  }
+  const W = 1000;
+  const H = W * ((maxY - minY) / ((maxX - minX) * latScale));
+  const M = 80;   // bleed margin around the core map where edge markers/labels can overflow
+  const px = lon => (lon - minX) / (maxX - minX) * W;
+  const py = lat => H - (lat - minY) / (maxY - minY) * H;
+  docProj = { minX, minY, maxX, maxY, W, H, M };
+  const path = coords => coords.map((c, i) => `${i ? 'L' : 'M'}${px(c[0]).toFixed(1)} ${py(c[1]).toFixed(1)}`).join('');
+
+  const clipRings = (fp.type === 'MultiPolygon' ? fp.coordinates.flat() : fp.coordinates)
+    .map(ring => path(ring) + 'Z').join('');
+
+  // slice the ward-wide data down to this view (visual clipping is the SVG's job)
+  const inView = c => c[0] >= minX && c[0] <= maxX && c[1] >= minY && c[1] <= maxY;
+  const wm = wardMapData || { buildings: [], roads: [] };
+  const buildings = wm.buildings.filter(b => b.some(inView))
+    .map(b => `<path d="${path(b)}Z" fill="#e2e2df" stroke="#cfcfc9" stroke-width="0.7"/>`).join('');
+
+  const MAIN_ROADS = new Set(['primary', 'secondary', 'tertiary', 'trunk']);
+  let roads = '';
+  const byName = {};
+  for (const rd of wm.roads) {
+    if (!rd.coords.some(inView)) continue;
+    const w = MAIN_ROADS.has(rd.highway) ? 7 : (rd.highway === 'footway' || rd.highway === 'path' ? 1.5 : 4);
+    roads += `<path d="${path(rd.coords)}" fill="none" stroke="#c9c9c9" stroke-width="${w}" stroke-linecap="round"/>`;
+    if (rd.name) (byName[rd.name] = byName[rd.name] || []).push(rd);
+  }
+  const scene = buildings + roads;
+
+  // --- coordinate grid: light lat/lon lines with values along the edges ---
+  const niceStep = x => { const p = 10 ** Math.floor(Math.log10(x)); const m = x / p; return (m >= 5 ? 5 : m >= 2 ? 2 : 1) * p; };
+  let grid = '';
+  const lonStep = niceStep((maxX - minX) / 4), latStep = niceStep((maxY - minY) / 4);
+  for (let lon = Math.ceil(minX / lonStep) * lonStep; lon < maxX; lon += lonStep) {
+    const x = px(lon).toFixed(1);
+    grid += `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="#88a" stroke-width="0.6" opacity="0.25"/>` +
+      `<text x="${x}" y="12" font-size="10" fill="#778" text-anchor="middle" style="paint-order:stroke;stroke:#fff;stroke-width:2px;font-family:system-ui">${lon.toFixed(3)}°</text>` +
+      `<text x="${x}" y="${(H - 4).toFixed(1)}" font-size="10" fill="#778" text-anchor="middle" style="paint-order:stroke;stroke:#fff;stroke-width:2px;font-family:system-ui">${lon.toFixed(3)}°</text>`;
+  }
+  for (let lat = Math.ceil(minY / latStep) * latStep; lat < maxY; lat += latStep) {
+    const y = py(lat).toFixed(1);
+    grid += `<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="#88a" stroke-width="0.6" opacity="0.25"/>` +
+      `<text x="4" y="${y}" font-size="10" fill="#778" dy="-2" style="paint-order:stroke;stroke:#fff;stroke-width:2px;font-family:system-ui">${lat.toFixed(3)}°</text>` +
+      `<text x="${W - 4}" y="${y}" font-size="10" fill="#778" dy="-2" text-anchor="end" style="paint-order:stroke;stroke:#fff;stroke-width:2px;font-family:system-ui">${lat.toFixed(3)}°</text>`;
+  }
+
+  // --- street labels: inline along long stretches; short streets get a label placed
+  // NEARBY, dodging roads and other labels — a leader line only when nothing nearby fits ---
+  const svgLen = coords => {
+    let l = 0;
+    for (let i = 1; i < coords.length; i++)
+      l += Math.hypot(px(coords[i][0]) - px(coords[i - 1][0]), py(coords[i][1]) - py(coords[i - 1][1]));
+    return l;
+  };
+  const ownNames = new Set(rt.streets.map(s => s.name));
+  const cen = turf.centroid(rt.footprint).geometry.coordinates;
+  let labels = '';
+  const halo = 'style="paint-order:stroke;stroke:#fff;stroke-width:3px;font-family:system-ui"';
+  // this route's own streets get their text in the route colour, shadowed with whichever
+  // of dark/light-grey contrasts with that colour, instead of the plain white halo
+  const ownHalo = `style="paint-order:stroke;stroke:${contrastShadow(rt.color)};stroke-width:3px;font-family:system-ui"`;
+
+  // collision helpers: boxes of placed labels + a coarse grid of road-covered cells
+  const placed = [];
+  const CELL = 22;
+  const roadCells = new Set();
+  for (const rd of wm.roads) {
+    if (!rd.coords.some(inView)) continue;
+    for (const c of rd.coords) roadCells.add(`${(px(c[0]) / CELL) | 0},${(py(c[1]) / CELL) | 0}`);
+  }
+  const labelClear = (x, y, w, h) =>
+    !placed.some(b => x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y);
+  const roadHits = (x, y, w, h) => {
+    let n = 0;
+    for (let cx = (x / CELL) | 0; cx <= ((x + w) / CELL) | 0; cx++)
+      for (let cy = (y / CELL) | 0; cy <= ((y + h) / CELL) | 0; cy++)
+        if (roadCells.has(`${cx},${cy}`)) n++;
+    return n;
+  };
+  const claim = (x, y, w, h) => placed.push({ x, y, w, h });
+
+  for (const [name, rds] of Object.entries(byName)) {
+    const rd = rds.reduce((a, b) => (svgLen(b.coords) > svgLen(a.coords) ? b : a));
+    const len = svgLen(rd.coords);
+    const mid = rd.coords[Math.floor(rd.coords.length / 2)];
+    const mx = px(mid[0]), my = py(mid[1]);
+    const w = name.length * 7.2, h = 15;
+    if (len >= 95) {
+      const nxt = rd.coords[Math.min(Math.floor(rd.coords.length / 2) + 1, rd.coords.length - 1)];
+      let ang = Math.atan2(py(nxt[1]) - my, px(nxt[0]) - mx) * 180 / Math.PI;
+      if (ang > 90) ang -= 180;
+      if (ang < -90) ang += 180;
+      const isOwn = ownNames.has(name);
+      labels += `<text x="${mx.toFixed(1)}" y="${my.toFixed(1)}" transform="rotate(${ang.toFixed(0)} ${mx.toFixed(1)} ${my.toFixed(1)})"
+        font-size="13" fill="${isOwn ? rt.color : '#444'}" font-weight="${isOwn ? 700 : 400}" text-anchor="middle" dy="-4" ${isOwn ? ownHalo : halo}>${name}</text>`;
+      claim(mx - w / 2, my - h, w, h);
+    } else if (ownNames.has(name)) {
+      // try spots ringing the street: first one that clears other labels and mostly
+      // clears roads wins; progressively farther rings; leader line as last resort
+      let best = null, bestScore = Infinity;
+      outer:
+      for (const [ox, oy] of [[0, -16], [0, 22], [34, -10], [-34, -10], [34, 24], [-34, 24],
+                              [0, -34], [0, 40], [56, 6], [-56, 6]]) {
+        const lx = mx + ox, ly = my + oy;
+        if (lx - w / 2 < 6 || lx + w / 2 > W - 6 || ly - h < 14 || ly > H - 6) continue;
+        if (!labelClear(lx - w / 2, ly - h, w, h)) continue;
+        const score = roadHits(lx - w / 2, ly - h, w, h);
+        if (score === 0) { best = [lx, ly]; break outer; }
+        if (score < bestScore) { bestScore = score; best = [lx, ly]; }
+      }
+      if (best && bestScore <= 3) {
+        const [lx, ly] = best;
+        labels += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="13" fill="${rt.color}" font-weight="700" text-anchor="middle" ${ownHalo}>${name}</text>`;
+        claim(lx - w / 2, ly - h, w, h);
+      } else {
+        // crowded spot — push the label away from the route centroid with a leader line
+        let dx = mx - px(cen[0]), dy = my - py(cen[1]);
+        const dl = Math.hypot(dx, dy) || 1;
+        dx /= dl; dy /= dl;
+        let lx = Math.min(Math.max(mx + dx * 130, 40), W - 40);
+        let ly = Math.min(Math.max(my + dy * 130, 22), H - 14);
+        for (let tries = 0; tries < 6 && !labelClear(lx - w / 2, ly - h, w, h); tries++) ly += 18;
+        labels += `<line x1="${lx.toFixed(1)}" y1="${ly.toFixed(1)}" x2="${mx.toFixed(1)}" y2="${my.toFixed(1)}" stroke="#666" stroke-width="1"/>` +
+          `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="13" fill="${rt.color}" font-weight="700" text-anchor="middle" dy="-4" ${ownHalo}>${name}</text>`;
+        claim(lx - w / 2, ly - h, w, h);
+      }
+    }
+  }
+
+  // --- orientation markers: nearest station / bus station / place centres, plus the
+  // most prominent main roads, marked at the map edge with a direction arrow ---
+  let poiMarks = '';
+  {
+    const cx = W / 2, cy = H / 2, inset = 20;
+    const cgeo = [(minX + maxX) / 2, (minY + maxY) / 2];
+    // each POI/road is a boxed label with a small triangular tail attached to the box's
+    // own border, pointing at the thing it names (the on-screen dot, or the point where
+    // its direction exits the map) — a map-callout look instead of a free-floating arrow
+    const mark = (gx, gy, text, withDist) => {
+      let x = px(gx), y = py(gy), dot = '', tx, ty, dirx, diry;
+      const inside = x > inset && x < W - inset && y > inset && y < H - inset;
+      if (withDist) {
+        const d = turf.distance(turf.point(cgeo), turf.point([gx, gy]));
+        text += ` ${d < 10 ? d.toFixed(1) : Math.round(d)} km`;
+      }
+
+      // word-wrap toward a near-square box: pick a line count that makes width ≈ height,
+      // then greedily break on word boundaries to roughly that many lines
+      const CW = 6.4, LH = 13;
+      const words = text.split(' ');
+      let lines = [text], n = Math.max(1, Math.round(Math.sqrt(text.length * CW / LH)));
+      for (let tries = 0; tries < 4 && words.length > 1; tries++) {
+        const targetPerLine = Math.ceil(text.length / n);
+        const built = []; let cur = '';
+        for (const wd of words) {
+          const cand = cur ? cur + ' ' + wd : wd;
+          if (cur && cand.length > targetPerLine) { built.push(cur); cur = wd; } else cur = cand;
+        }
+        if (cur) built.push(cur);
+        lines = built;
+        if (lines.length <= n) break;
+        n++;
+      }
+      const w = Math.max(...lines.map(l => l.length * CW));
+      const h = lines.length * LH;
+
+      if (!inside) {   // clamp along the centre→POI ray to the map border, then push the
+        // box out almost to the true edge of the rendered image (the M-wide bleed margin)
+        const dx = x - cx, dy = y - cy;
+        let t = Infinity;
+        if (dx > 0) t = Math.min(t, (W - inset - cx) / dx); else if (dx < 0) t = Math.min(t, (inset - cx) / dx);
+        if (dy > 0) t = Math.min(t, (H - inset - cy) / dy); else if (dy < 0) t = Math.min(t, (inset - cy) / dy);
+        x = cx + dx * t; y = cy + dy * t;
+        const ul = Math.hypot(dx, dy) || 1;
+        dirx = dx / ul; diry = dy / ul;
+        const reach = Math.max(30, M - Math.max(w, h) / 2 - 6);
+        tx = x + dirx * reach; ty = y + diry * reach;
+      } else {
+        dot = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="#1d4ed8"/>`;
+        // box sits inward of the dot, toward the map centre
+        const ux = cx - x, uy = cy - y, ul = Math.hypot(ux, uy) || 1;
+        dirx = -ux / ul; diry = -uy / ul;   // outward, toward the dot
+        tx = x + ux / ul * 22; ty = y + uy / ul * 22;
+      }
+      const pad = 4, bw = w + pad * 2, bh = h + pad * 2;
+      const bx = tx - bw / 2, by = ty - bh / 2;
+      if (!labelClear(bx, by, bw, bh)) return;
+      claim(bx, by, bw, bh);
+
+      // triangle tail: attached to the box's OUTER edge (away from the map centre),
+      // tip continuing outward past it — points at the thing, not back at the map
+      const hw = bw / 2, hh = bh / 2;
+      let at = Infinity;
+      if (dirx !== 0) at = Math.min(at, hw / Math.abs(dirx));
+      if (diry !== 0) at = Math.min(at, hh / Math.abs(diry));
+      const ex = tx + dirx * at, ey = ty + diry * at;
+      const tipx = ex + dirx * 9, tipy = ey + diry * 9;
+      const perpx = -diry, perpy = dirx, baseHalf = 5;
+      const tail = `<path d="M${(ex + perpx * baseHalf).toFixed(1)} ${(ey + perpy * baseHalf).toFixed(1)} ` +
+        `L${tipx.toFixed(1)} ${tipy.toFixed(1)} L${(ex - perpx * baseHalf).toFixed(1)} ${(ey - perpy * baseHalf).toFixed(1)} Z" fill="#1d4ed8"/>`;
+
+      const firstLineY = ty - h / 2 + LH * 0.75;
+      const textLines = lines.map((l, i) =>
+        `<tspan x="${tx.toFixed(1)}" y="${(firstLineY + i * LH).toFixed(1)}">${l}</tspan>`).join('');
+
+      poiMarks += dot +
+        `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="4" fill="#eef4ff" stroke="#1d4ed8" stroke-width="1.2"/>` +
+        tail +
+        `<text font-size="11.5" font-weight="600" fill="#1d4ed8" text-anchor="middle">${textLines}</text>`;
+    };
+
+    const pois = wm.pois || [];
+    const d2 = p => ((p.lon - cgeo[0]) * latScale) ** 2 + (p.lat - cgeo[1]) ** 2;
+    const pick = f => pois.filter(f).sort((a, b) => d2(a) - d2(b))[0];
+    const ICON = { 'station': '🚉 ', 'bus station': '🚏 ' };
+    for (const p of [pick(p => p.kind === 'station'),
+                     pick(p => p.kind === 'bus station'),
+                     pick(p => p.kind === 'city' || p.kind === 'town'),
+                     pick(p => ['village', 'suburb', 'neighbourhood'].includes(p.kind))].filter(Boolean))
+      mark(p.lon, p.lat, (ICON[p.kind] || '') + p.name, true);
+
+    // main roads: prominence = ward-wide length × class weight; mark where each heads off the map
+    const wt = { motorway: 3, trunk: 3, primary: 2.5, secondary: 1.5, tertiary: 1 };
+    const prom = {};
+    for (const rd of wm.roads) {
+      if (!wt[rd.highway] || !rd.name) continue;
+      const g = prom[rd.name] = prom[rd.name] || { len: 0, w: wt[rd.highway], coords: [] };
+      for (let i = 1; i < rd.coords.length; i++)
+        g.len += Math.hypot((rd.coords[i][0] - rd.coords[i - 1][0]) * latScale, rd.coords[i][1] - rd.coords[i - 1][1]);
+      g.coords.push(...rd.coords);
+    }
+    const topRoads = Object.entries(prom).sort((a, b) => b[1].len * b[1].w - a[1].len * a[1].w).slice(0, 4);
+    for (const [name, g] of topRoads) {
+      const inV = g.coords.filter(inView);
+      if (inV.length) {   // crosses the view — mark the in-view point farthest from centre (≈ its exit)
+        const far = inV.reduce((a, b) =>
+          ((b[0] - cgeo[0]) * latScale) ** 2 + (b[1] - cgeo[1]) ** 2 >
+          ((a[0] - cgeo[0]) * latScale) ** 2 + (a[1] - cgeo[1]) ** 2 ? b : a);
+        mark(far[0], far[1], name, false);
+      } else {
+        const near = g.coords.reduce((a, b) =>
+          ((b[0] - cgeo[0]) * latScale) ** 2 + (b[1] - cgeo[1]) ** 2 <
+          ((a[0] - cgeo[0]) * latScale) ** 2 + (a[1] - cgeo[1]) ** 2 ? b : a);
+        mark(near[0], near[1], name, true);
+      }
+    }
+  }
+
+  let route = '';
+  for (const f of rt.edges.features) {
+    const e = `${f.properties.u}|${f.properties.v}|${f.properties.k}`;
+    const d = path(f.geometry.coordinates);
+    const col = chooseMode ? '#999' : rt.color;
+    const op = chooseMode ? 0.3 : 0.5;
+    route += `<path class="routepath" data-e="${e}" d="${d}" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" opacity="${op}"/>`;
+  }
+
+  // "Choose route" mode: every other route's own edges, in its own colour, clickable to jump to it
+  let otherRoutes = '';
+  if (chooseMode && lastResult) {
+    for (const other of lastResult.routes) {
+      if (other === rt) continue;
+      for (const f of other.edges.features) {
+        if (!f.geometry.coordinates.some(inView)) continue;
+        const d = path(f.geometry.coordinates);
+        otherRoutes += `<path class="otherroute" data-rid="${other.id}" d="${d}" fill="none" stroke="${other.color}" stroke-width="5" stroke-linecap="round" opacity="0.8"/>`;
+      }
+    }
+  }
+
+  const top = rt.top
+    ? `<path d="M${px(rt.top.lon).toFixed(1)} ${(py(rt.top.lat) - 14).toFixed(1)} l9 16 h-18 Z" fill="#111"/>`
+    : '';
+
+  return `<svg viewBox="${-M} ${-M} ${(W + 2 * M).toFixed(0)} ${(H + 2 * M).toFixed(0)}" xmlns="http://www.w3.org/2000/svg">
+    <defs><clipPath id="fpclip"><path d="${clipRings}"/></clipPath></defs>
+    <rect x="${-M}" y="${-M}" width="${W + 2 * M}" height="${H + 2 * M}" fill="#fff"/>
+    <g opacity="0.8">${scene}</g>
+    <g clip-path="url(#fpclip)">
+      <rect width="100%" height="100%" fill="#fff"/>
+      ${scene}${route}
+    </g>
+    ${grid}${labels}${poiMarks}${otherRoutes}${top}
+  </svg>`;
+}
+
+function renderDocMap(rt) {
+  const docmap = $('docmap');
+  if (!docmap) return;
+  // ponytail: A4 fitting heuristics — measured, not typeset. The TEXT lays out first;
+  // whatever page-1 space it leaves becomes the map box (min a generous fixed height),
+  // and that box's aspect ratio then bounds the map geography so it fills exactly.
+  const pageInner = 269 * MM;
+  const used = $('docpage1').querySelector('h2').offsetHeight +
+               $('docpage1').querySelector('.meta').offsetHeight +
+               $('doccontent').offsetHeight + 30;
+  const avail = pageInner - used;
+  const h = Math.round(avail > 70 * MM ? avail : 140 * MM);
+  docmap.style.height = `${h}px`;
+  docmap.innerHTML = routeSVG(rt, (docmap.clientWidth || 1) / h);
+
+  for (const [e, type] of markedEdges) setMarkClass(e, type);   // survive an SVG rebuild
+
+  if (chooseMode) {
+    const tip = $('otherroutetip');
+    docmap.querySelectorAll('.otherroute').forEach(p => {
+      const other = lastResult.routes.find(r => String(r.id) === p.dataset.rid);
+      if (!other) return;
+      p.addEventListener('click', () => openDoc(other));
+      p.addEventListener('mouseenter', () => {
+        tip.textContent = `Route ${other.num || other.id}${other.name ? ': ' + other.name : ''} — ${other.addresses} addr`;
+        tip.style.display = 'block';
+      });
+      p.addEventListener('mousemove', ev => {
+        tip.style.left = `${ev.clientX + 14}px`;
+        tip.style.top = `${ev.clientY + 14}px`;
+      });
+      p.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    });
+  }
+}
+
+$('docchoose').addEventListener('click', () => {
+  const rt = currentRoute();
+  if (!rt) return;
+  chooseMode = !chooseMode;
+  $('docchoose').classList.toggle('active', chooseMode);
+  $('status').textContent = chooseMode
+    ? 'Choose a route to jump to — other routes shown in colour, click one. This route keeps its sparse-street view.'
+    : '';
+  renderDocMap(rt);
+  buildSparseSidebar(rt);
+});
+
+// --- mark streets ("not to visit" or "for other route"), apply as ONE recalculation ---
+function setMarkClass(e, type) {
+  $('docmap').querySelectorAll(`[data-e="${CSS.escape(e)}"]`).forEach(p => {
+    p.classList.toggle('marked', type === 'remove');
+    p.classList.toggle('markedO', type === 'orphan');
+  });
+}
+
+// click a red/gold marked segment to adopt it back — #docmap is rebuilt on every render,
+// so the listener lives on the never-replaced #docview and finds its target by bubbling
+$('docview').addEventListener('click', ev => {
+  if (Date.now() - toolJustFinished < 300) return;   // trailing click from a drag-tool's pointerup
+  const p = ev.target.closest('.routepath');
+  if (!p || !p.dataset.e || !(p.classList.contains('marked') || p.classList.contains('markedO'))) return;
+  const rt = currentRoute();
+  if (!rt) return;
+  markedEdges.delete(p.dataset.e);
+  setMarkClass(p.dataset.e, null);
+  $('docapply').disabled = markedEdges.size === 0 && !pendingTakes.length;
+  $('status').textContent = `Adopted back into the route — ${markedEdges.size} segment(s) still marked.`;
+  updateAddrBadge();
+  buildSparseSidebar(rt);
+});
+
+// freehand region over the SVG: mark every route segment the region touches — the same
+// press-drag gesture as the cutout tools, projected back through docProj.
+// mode 'remove' = not to visit (dropped entirely); 'orphan' = for another route;
+// 'take' = pull segments of OTHER routes (or the orphan pool) into this one.
+let pendingTakes = [];   // [{f, from}] awaiting Apply marks; from = route id or 'orphan'
+
+function drawTakePath(f) {
+  const svg = $('docmap').querySelector('svg');
+  const P = p => [(p[0] - docProj.minX) / (docProj.maxX - docProj.minX) * docProj.W,
+                  docProj.H - (p[1] - docProj.minY) / (docProj.maxY - docProj.minY) * docProj.H];
+  const el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  el.setAttribute('d', 'M' + f.geometry.coordinates.map(c => P(c).map(v => v.toFixed(1)).join(',')).join('L'));
+  el.setAttribute('class', 'takepending');
+  el.setAttribute('fill', 'none');
+  el.setAttribute('stroke', '#059669');
+  el.setAttribute('stroke-width', 5);
+  el.setAttribute('stroke-dasharray', '8 5');
+  el.setAttribute('opacity', 0.8);
+  svg.appendChild(el);
+}
+
+function areaSelect(mode) {
+  const rt = currentRoute();
+  const svg = $('docmap') && $('docmap').querySelector('svg');
+  if (!rt || !svg || !docProj) return;
+  $('docview').classList.add('drawing');
+  $('status').textContent = mode === 'take'
+    ? 'Press and drag around the other-route streets you want to pull into this route.'
+    : `Press and drag on the map to mark everything the region touches as ${mode === 'orphan' ? '"for other route"' : '"not to visit"'}.`;
+  const ns = 'http://www.w3.org/2000/svg';
+  const TOOLC = { remove: ['rgba(17,17,17,0.15)', '#111'], orphan: ['rgba(37,99,235,0.15)', '#2563eb'],
+                  take: ['rgba(5,150,105,0.15)', '#059669'] };
+  const live = document.createElementNS(ns, 'polygon');
+  live.setAttribute('fill', TOOLC[mode][0]);
+  live.setAttribute('stroke', TOOLC[mode][1]);
+  live.setAttribute('stroke-dasharray', '5 4');
+  const pts = [];
+  const toSvg = ev => {
+    const r = svg.getBoundingClientRect();
+    const M = docProj.M || 0;
+    return [(ev.clientX - r.left) / r.width * (docProj.W + 2 * M) - M,
+            (ev.clientY - r.top) / r.height * (docProj.H + 2 * M) - M];
+  };
+  const invPt = p => [docProj.minX + p[0] / docProj.W * (docProj.maxX - docProj.minX),
+                      docProj.minY + (docProj.H - p[1]) / docProj.H * (docProj.maxY - docProj.minY)];
+  const onMove = ev => {
+    pts.push(toSvg(ev));
+    live.setAttribute('points', pts.map(p => p.join(',')).join(' '));
+  };
+  const onUp = () => {
+    svg.removeEventListener('pointermove', onMove);
+    svg.removeEventListener('pointerup', onUp);
+    live.remove();
+    $('docview').classList.remove('drawing');
+    toolJustFinished = Date.now();
+    if (pts.length >= 3) {
+      const ring = pts.map(invPt);
+      ring.push(ring[0]);
+      let region = null;
+      try { region = turf.polygon([ring]); } catch (e) {}
+      if (region && mode === 'take') {
+        const key = f => `${f.properties.u}|${f.properties.v}|${f.properties.k}`;
+        const skip = new Set([...rt.edges.features, ...pendingTakes.map(t => t.f)].map(key));
+        const candidates = [];
+        for (const r of lastResult.routes) if (r !== rt)
+          for (const f of r.edges.features) candidates.push({ f, from: r.id });
+        for (const o of orphans) candidates.push({ f: o.f, from: o.from });
+        let hit = 0;
+        for (const c of candidates) {
+          if (skip.has(key(c.f))) continue;
+          if (turf.booleanIntersects(c.f, region)) { pendingTakes.push(c); drawTakePath(c.f); hit++; skip.add(key(c.f)); }
+        }
+        $('docapply').disabled = markedEdges.size === 0 && !pendingTakes.length;
+        $('status').textContent = `${hit} segment(s) to take — ${pendingTakes.length} pending. Apply marks to commit.`;
+        updateAddrBadge();
+      } else if (region) {
+        let hit = 0;
+        for (const f of rt.edges.features) {
+          const e = `${f.properties.u}|${f.properties.v}|${f.properties.k}`;
+          if (turf.booleanIntersects(f, region)) {
+            markedEdges.set(e, mode);
+            setMarkClass(e, mode);
+            hit++;
+          }
+        }
+        $('docapply').disabled = markedEdges.size === 0 && !pendingTakes.length;
+        $('status').textContent = `${hit} segment(s) marked — ${markedEdges.size} pending. Apply marks when done, or Clear marks.`;
+        updateAddrBadge();
+        buildSparseSidebar(rt);
+      }
+    } else {
+      $('status').textContent = 'Stroke too short — try again.';
+    }
+  };
+  svg.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    svg.appendChild(live);
+    pts.push(toSvg(ev));
+    svg.addEventListener('pointermove', onMove);
+    svg.addEventListener('pointerup', onUp);
+  }, { once: true });
+}
+$('docmarknot').addEventListener('click', () => areaSelect('remove'));
+$('docmarkother').addEventListener('click', () => areaSelect('orphan'));
+$('doctake').addEventListener('click', () => areaSelect('take'));
+
+// --- sparse streets: every street's length:address ratio, sparsest first, so a sensible
+// removal threshold can be judged by eye. Always-visible right sidebar (not a toggled panel);
+// each row has two icon-only buttons to mark the whole street 'not to visit' / 'for other route'.
+
+// density colour: green for well-populated streets (≤8 m per address) through to red for
+// very sparse (≥60 m per address, or no addresses at all), log-interpolated between
+function sparseColor(m, addr) {
+  if (!addr) return 'hsl(0,75%,50%)';
+  const t = Math.min(Math.max((Math.log(m / addr) - Math.log(8)) / (Math.log(60) - Math.log(8)), 0), 1);
+  return `hsl(${Math.round(120 * (1 - t))},75%,45%)`;
+}
+
+function buildSparseSidebar(rt) {
+  const stats = {};
+  for (const f of rt.edges.features) {
+    const p = f.properties;
+    const s = stats[p.name] = stats[p.name] || { name: p.name, m: 0, addr: 0, keys: [] };
+    s.m += turf.length(f) * 1000;
+    s.addr += p.addresses || 0;
+    s.keys.push(`${p.u}|${p.v}|${p.k}`);
+  }
+  // recolour the route on the map by density — this is now the route page's permanent look
+  for (const s of Object.values(stats)) {
+    const col = sparseColor(s.m, s.addr);
+    for (const k of s.keys) {
+      $('docmap').querySelectorAll(`[data-e="${CSS.escape(k)}"]`).forEach(p => {
+        p.setAttribute('stroke', col);
+        p.setAttribute('opacity', '0.95');
+      });
+    }
+  }
+  const rows = Object.values(stats)
+    .sort((a, b) => b.m / (b.addr || 0.5) - a.m / (a.addr || 0.5));
+  $('sparselist').innerHTML =
+    '<h4>Sparse streets</h4><div class="muted" style="margin-bottom:6px">Length per address, sparsest first. Map recoloured to match.</div>' +
+    rows.map(s => {
+      const ratio = s.addr ? `${Math.round(s.m / s.addr)} m/addr` : '∞ (no addr)';
+      const allRemoved = s.keys.every(k => markedEdges.get(k) === 'remove');
+      const allOrphan = s.keys.every(k => markedEdges.get(k) === 'orphan');
+      return `<div class="sprow" data-street="${encodeURIComponent(s.name)}">
+        <span class="nm">${s.name}<span class="num">${Math.round(s.m)} m · ${s.addr} addr · <b style="color:${sparseColor(s.m, s.addr)}">${ratio}</b></span></span>
+        <button class="spico${allRemoved ? ' active-remove' : ''}" data-mode="remove" title="Mark: not to visit">▨</button>
+        <button class="spico${allOrphan ? ' active-orphan' : ''}" data-mode="orphan" title="Mark: for other route">⇄</button>
+      </div>`;
+    }).join('');
+  $('sparselist').querySelectorAll('.sprow').forEach(row => {
+    const s = stats[decodeURIComponent(row.dataset.street)];
+    const paths = () => s.keys.flatMap(k => [...$('docmap').querySelectorAll(`[data-e="${CSS.escape(k)}"]`)]);
+    row.addEventListener('mouseenter', () => paths().forEach(p => p.classList.add('sphover')));
+    row.addEventListener('mouseleave', () => paths().forEach(p => p.classList.remove('sphover')));
+  });
+  $('sparselist').querySelectorAll('.spico').forEach(btn => btn.addEventListener('click', () => {
+    const row = btn.closest('.sprow');
+    const name = decodeURIComponent(row.dataset.street);
+    const s = stats[name];
+    const mode = btn.dataset.mode;
+    const allSet = s.keys.every(k => markedEdges.get(k) === mode);
+    for (const k of s.keys) {
+      if (allSet) markedEdges.delete(k); else markedEdges.set(k, mode);
+      setMarkClass(k, allSet ? null : mode);
+    }
+    $('docapply').disabled = markedEdges.size === 0 && !pendingTakes.length;
+    $('status').textContent = `${markedEdges.size} segment(s) marked — Apply marks when done, or Clear marks.`;
+    updateAddrBadge();
+    buildSparseSidebar(rt);   // refresh active-icon state
+  }));
+}
+
+$('docclearmarks').addEventListener('click', () => {
+  for (const [e] of markedEdges) setMarkClass(e, null);
+  markedEdges.clear();
+  pendingTakes = [];
+  document.querySelectorAll('.takepending').forEach(el => el.remove());
+  $('docapply').disabled = true;
+  const rt = currentRoute();
+  if (rt) buildSparseSidebar(rt);
+  updateAddrBadge();
+  $('status').textContent = 'All marks cleared.';
+});
+
+// --- split route: draw a chord across the route; verify (two colours) then confirm,
+// which turns this route into two and re-runs each one's walk-order planning ---
+const COLORS = ['#e15759', '#4e79a7', '#59a14f', '#f28e2b', '#b07aa1',
+                '#76b7b2', '#edc948', '#ff9da7'];
+let pendingSplit = null;   // {a: [features], b: [features]} awaiting confirm
+
+$('docsplit').addEventListener('click', () => {
+  const rt = currentRoute();
+  const svg = $('docmap') && $('docmap').querySelector('svg');
+  if (!rt || !svg || !docProj) return;
+  cancelSplit();
+  $('docview').classList.add('drawing');
+  $('status').textContent = 'Press and drag a line right across the route where it should split, release to finish.';
+  const ns = 'http://www.w3.org/2000/svg';
+  const live = document.createElementNS(ns, 'polyline');
+  live.setAttribute('fill', 'none');
+  live.setAttribute('stroke', '#c00');
+  live.setAttribute('stroke-width', '3');
+  live.setAttribute('stroke-dasharray', '8 5');
+  const pts = [];
+  const toSvg = ev => {
+    const r = svg.getBoundingClientRect();
+    const M = docProj.M || 0;
+    return [(ev.clientX - r.left) / r.width * (docProj.W + 2 * M) - M,
+            (ev.clientY - r.top) / r.height * (docProj.H + 2 * M) - M];
+  };
+  const invPt = p => [docProj.minX + p[0] / docProj.W * (docProj.maxX - docProj.minX),
+                      docProj.minY + (docProj.H - p[1]) / docProj.H * (docProj.maxY - docProj.minY)];
+  const onMove = ev => {
+    pts.push(toSvg(ev));
+    live.setAttribute('points', pts.map(p => p.join(',')).join(' '));
+  };
+  const onUp = () => {
+    svg.removeEventListener('pointermove', onMove);
+    svg.removeEventListener('pointerup', onUp);
+    live.remove();
+    $('docview').classList.remove('drawing');
+    toolJustFinished = Date.now();
+    if (pts.length < 2) { $('status').textContent = 'Line too short — try again.'; return; }
+    const chord = turf.lineString(pts.map(invPt));
+    const groups = splitGroups(rt, chord);
+    if (!groups) {
+      $('status').textContent = "That line doesn't split the route into two connected parts — draw it right across.";
+      return;
+    }
+    pendingSplit = groups;
+    // verify: recolour side B blue so the two halves are obvious before committing
+    const bKeys = new Set(groups.b.map(f => `${f.properties.u}|${f.properties.v}|${f.properties.k}`));
+    $('docmap').querySelectorAll('.routepath[data-e]').forEach(p => {
+      if (bKeys.has(p.dataset.e) && p.getAttribute('stroke') !== '#000')
+        p.setAttribute('stroke', '#2563eb');
+    });
+    $('docsplitok').style.display = 'flex';
+    $('docsplitcancel').style.display = 'flex';
+    $('status').textContent =
+      `Split preview: ${groups.a.length} segments stay ${'in ' + (rt.name || 'this route')}, ${groups.b.length} become a new route (blue). Confirm or cancel.`;
+    updateAddrBadge();
+  };
+  svg.addEventListener('pointerdown', ev => {
+    ev.preventDefault();
+    svg.appendChild(live);
+    pts.push(toSvg(ev));
+    svg.addEventListener('pointermove', onMove);
+    svg.addEventListener('pointerup', onUp);
+  }, { once: true });
+});
+
+// partition rt's edges into the two connected sides of the drawn chord
+function splitGroups(rt, chord) {
+  const crossed = [], keep = [];
+  for (const f of rt.edges.features) (turf.booleanIntersects(f, chord) ? crossed : keep).push(f);
+  if (!crossed.length || !keep.length) return null;
+  const parent = {};
+  const find = x => { while (parent[x] !== undefined) x = parent[x]; return x; };
+  const union = (x, y) => { x = find(x); y = find(y); if (x !== y) parent[x] = y; };
+  for (const f of keep) union(f.properties.u, f.properties.v);
+  const groups = {};
+  for (const f of keep) {
+    const r = find(f.properties.u);
+    (groups[r] = groups[r] || []).push(f);
+  }
+  const comps = Object.values(groups).sort((x, y) => y.length - x.length);
+  if (comps.length < 2) return null;   // the chord didn't disconnect anything
+  const a = comps[0], b = comps[1];
+  const nodesOf = fs => new Set(fs.flatMap(f => [f.properties.u, f.properties.v]));
+  const aN = nodesOf(a), bN = nodesOf(b);
+  // crossed edges + any stray extra components: repeatedly attach whatever touches a
+  // side (sides grow as pieces join); anything never reached defaults to side A
+  const pool = comps.slice(2).concat(crossed.map(f => [f]));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = pool.length - 1; i >= 0; i--) {
+      const cN = nodesOf(pool[i]);
+      const inA = [...cN].some(n => aN.has(n));
+      const inB = !inA && [...cN].some(n => bN.has(n));
+      if (inA || inB) {
+        const side = inA ? a : b, sideN = inA ? aN : bN;
+        side.push(...pool[i]);
+        cN.forEach(n => sideN.add(n));
+        pool.splice(i, 1);
+        changed = true;
+      }
+    }
+  }
+  pool.forEach(c => a.push(...c));
+  return { a, b };
+}
+
+function cancelSplit() {
+  if (!pendingSplit) return;
+  pendingSplit = null;
+  $('docsplitok').style.display = 'none';
+  $('docsplitcancel').style.display = 'none';
+  const rt = currentRoute();
+  if (rt) renderDocMap(rt);   // restore single-colour route
+  updateAddrBadge();
+}
+$('docsplitcancel').addEventListener('click', () => { cancelSplit(); $('status').textContent = 'Split cancelled.'; });
+
+$('docsplitok').addEventListener('click', async () => {
+  const rt = currentRoute();
+  if (!rt || !pendingSplit) return;
+  const { a, b } = pendingSplit;
+  pendingSplit = null;
+  $('docsplitok').style.display = 'none';
+  $('docsplitcancel').style.display = 'none';
+  $('status').textContent = '⏳ Splitting — replanning both routes…';
+
+  rt.edges = { type: 'FeatureCollection', features: a };
+  rt.orig = null;                       // the confirm step was the safety; Reset no longer applies
+  recomputeStreets(rt);
+  rt.footprint = null;
+
+  const nrt = {
+    id: Math.max(...lastResult.routes.map(r => r.id)) + 1,
+    color: COLORS[lastResult.routes.length % COLORS.length],
+    edges: { type: 'FeatureCollection', features: b },
+    top: rt.top, notes: '', order: [], walk: null, walk_km: 0,
+  };
+  recomputeStreets(nrt);
+  const biggestNamed = r => (r.streets.find(s => !s.name.startsWith('(')) || {}).name || null;
+  nrt.main = biggestNamed(nrt);
+  nrt.name = nrt.main || '';
+  rt.main = biggestNamed(rt) || rt.main;
+  rt.name = rt.main || '';
+
+  await rerouteWalk(rt);
+  await rerouteWalk(nrt);
+  const areaOf = r => { try { return Math.round(turf.area(turf.convex(r.edges)) / 10000) / 100; } catch (e) { return 0; } };
+  rt.area_km2 = areaOf(rt);
+  nrt.area_km2 = areaOf(nrt);
+
+  const idx = lastResult.routes.indexOf(rt);
+  lastResult.routes.splice(idx + 1, 0, nrt);
+  render(lastResult);
+  prepareRoutes(lastResult);
+  await openDoc(rt);   // rt sits before nrt in the list — reopen the earlier of the two
+  $('status').textContent = `Route split into ${rt.addresses} + ${nrt.addresses} addresses.`;
+});
+
+$('docapply').addEventListener('click', async () => {
+  const rt = currentRoute();
+  if (!rt || (!markedEdges.size && !pendingTakes.length)) return;
+  if (!rt.orig) {   // first edit — keep the original so Reset can restore it
+    rt.orig = JSON.parse(JSON.stringify(
+      { edges: rt.edges, streets: rt.streets, order: rt.order, walk: rt.walk,
+        walk_km: rt.walk_km, addresses: rt.addresses }));
+  }
+  const keep = [], orphanFs = [];
+  let nRemoved = 0;
+  for (const f of rt.edges.features) {
+    const type = markedEdges.get(`${f.properties.u}|${f.properties.v}|${f.properties.k}`);
+    if (!type) keep.push(f);
+    else if (type === 'orphan') orphanFs.push(f);
+    else nRemoved++;
+  }
+  if (!keep.length && !pendingTakes.length) {   // every segment marked — the route dissolves
+    if (!confirm('Every segment is marked — delete this route entirely?')) return;
+    for (const f of orphanFs) orphans.push({ f, from: rt.id });
+    markedEdges.clear();
+    lastResult.routes = lastResult.routes.filter(r => r !== rt);
+    closeDoc();
+    render(lastResult);
+    prepareRoutes(lastResult);
+    updateOrphanUI();
+    $('status').textContent = `Route deleted — ${nRemoved} segment(s) dropped` +
+      (orphanFs.length ? `, ${orphanFs.length} orphaned for another route.` : '.');
+    return;
+  }
+  for (const f of orphanFs) orphans.push({ f, from: rt.id });
+  const nOrphaned = orphanFs.length;
+  markedEdges.clear();
+  $('docapply').disabled = true;
+
+  // commit pending takes: pull each segment out of its source (route or orphan pool)
+  const takes = pendingTakes;
+  pendingTakes = [];
+  const touched = new Map();
+  for (const t of takes) {
+    const src = lastResult.routes.find(r => r.id === t.from);
+    if (src) { src.edges.features = src.edges.features.filter(f => f !== t.f); touched.set(src.id, src); }
+    orphans = orphans.filter(o => o.f !== t.f);
+    keep.push(t.f);
+  }
+  if (takes.length) (rt.takenLog = rt.takenLog || []).push(...takes);   // Reset returns these to the orphan pool
+
+  rt.edges = { type: 'FeatureCollection', features: keep };
+  recomputeStreets(rt);
+  $('status').textContent = '⏳ Recalculating walk order…';
+  await rerouteWalk(rt);
+  for (const src of touched.values()) {
+    if (!src.edges.features.length) { lastResult.routes = lastResult.routes.filter(r => r !== src); continue; }
+    recomputeStreets(src);
+    await rerouteWalk(src);
+    refreshLayer(src);
+  }
+  if (takes.length) render(lastResult);   // sidebar link counts + any dissolved source route
+  updateOrphanUI();
+  $('status').textContent = `Marks applied — ${nRemoved} segment(s) removed` +
+    (nOrphaned ? `, ${nOrphaned} orphaned for another route` : '') +
+    (takes.length ? `, ${takes.length} taken from other routes` : '') + '.';
+  refreshRoute(rt);
+});
+
+// live address-count badge: what this route currently holds, and what pending
+// marks/takes/a split preview would leave it (and its new sibling) with
+function updateAddrBadge() {
+  const rt = currentRoute();
+  const badge = $('docaddrbadge');
+  if (!rt) { badge.innerHTML = ''; return; }
+  const addrOf = f => f.properties.addresses || 0;
+  if (pendingSplit) {
+    const na = pendingSplit.a.reduce((n, f) => n + addrOf(f), 0);
+    const nb = pendingSplit.b.reduce((n, f) => n + addrOf(f), 0);
+    const nextColor = COLORS[lastResult.routes.length % COLORS.length];
+    badge.innerHTML = `<span style="color:${rt.color}">●</span> <b>${na}</b> + ` +
+      `<span style="color:${nextColor}">●</span> <b>${nb}</b> addr`;
+    return;
+  }
+  let removed = 0;
+  for (const [k, mode] of markedEdges) {
+    if (mode !== 'remove' && mode !== 'orphan') continue;
+    const f = rt.edges.features.find(f => `${f.properties.u}|${f.properties.v}|${f.properties.k}` === k);
+    if (f) removed += addrOf(f);
+  }
+  const added = pendingTakes.reduce((n, t) => n + addrOf(t.f), 0);
+  if (!removed && !added) { badge.innerHTML = `<b>${rt.addresses}</b> addr`; return; }
+  const bits = [`${rt.addresses}`];
+  if (removed) bits.push(`<span style="color:#f77">− ${removed}</span>`);
+  if (added) bits.push(`<span style="color:#6d6">+ ${added}</span>`);
+  badge.innerHTML = `${bits.join(' ')} = <b>${rt.addresses - removed + added}</b> addr`;
+}
+
+function recomputeStreets(rt) {
+  const partial = {};   // keep cross-route PART flags from the existing table
+  for (const s of rt.streets || []) partial[s.name] = s.partial;
+  const streets = {};
+  let total = 0;
+  for (const f of rt.edges.features) {
+    const p = f.properties;
+    const s = streets[p.name] = streets[p.name] || { name: p.name, addresses: 0, partial: !!partial[p.name] };
+    s.addresses += p.addresses || 0;
+    total += p.addresses || 0;
+  }
+  rt.streets = Object.values(streets)
+    .filter(s => s.addresses > 0 || !s.name.startsWith('('))
+    .sort((a, b) => b.addresses - a.addresses);
+  rt.addresses = total;
+}
+
+async function rerouteWalk(rt, useElevation = false) {
+  try {
+    const r = await fetch('/reroute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        polygon: selGeom,
+        edges: rt.edges.features.map(f => [f.properties.u, f.properties.v, f.properties.k]),
+        allowed: rt.streets.map(s => s.name),
+        top: rt.top || null,
+        use_elevation: useElevation,
+      }),
+    });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    rt.order = j.order;
+    rt.walk = j.walk;
+    rt.walk_km = j.walk_km;
+    if (j.top) rt.top = j.top;   // walk start moves when edges change — keep the ▲ marker in sync
+  } catch (err) {
+    $('status').textContent = '❌ Replan failed: ' + err.message;
+  }
+}
+
+function refreshLayer(rt) {
+  rt.footprint = computeFootprint(rt);   // area changed
+  if (rt.layer) routesLayer.removeLayer(rt.layer);
+  rt.layer = L.geoJSON(rt.edges, { style: routeStyle(rt, false) }).addTo(routesLayer);
+  rt.layer.on('mouseover', () => setRouteMode(rt.id));
+  rt.layer.on('mouseout', () => setRouteMode(null));
+  if (rt.hoverLayer) { hoverLayer.removeLayer(rt.hoverLayer); rt.hoverLayer = null; }
+}
+
+function refreshRoute(rt) {
+  refreshLayer(rt);
+  refreshDoc(rt);               // keeps the erase toggle as-is for multi-segment edits
+  saveState();
+}
+
+$('docreset').addEventListener('click', resetRoute);
+function resetRoute() {
+  const rt = currentRoute();
+  if (!rt || !rt.orig) return;
+  // segments taken from other routes can't go back where they came from (the sources
+  // have already replanned without them) — return them to the orphan pool instead
+  for (const t of rt.takenLog || []) orphans.push(t);
+  rt.takenLog = null;
+  Object.assign(rt, JSON.parse(JSON.stringify(rt.orig)));
+  rt.orig = null;
+  // any streets this route orphaned come back with it — they're in its edges again
+  orphans = orphans.filter(o => o.from !== rt.id);
+  updateOrphanUI();
+  $('docreset').disabled = true;
+  refreshRoute(rt);
+}
+
+// --- print: single route document (with vector map) ---
+$('docprint').addEventListener('click', () => {
+  document.body.classList.add('printdoc');
+  window.print();
+});
+window.addEventListener('afterprint', () => document.body.classList.remove('printdoc'));
+
+// --- print: full pack, as a generated PDF (not the browser's print engine) — laid out with
+// explicit mm coordinates so page breaks land exactly where intended (Notes always starts
+// its own page instead of the browser guessing where content overflows) ---
+function mm2px(mm, dpi = 150) { return Math.round(mm * dpi / 25.4); }
+
+// rasterise an SVG string to a PNG data URL via an offscreen canvas — routeSVG already
+// inlines every style as attributes, so this needs no stylesheet/DOM attachment
+function svgToPngDataUrl(svgStr, pxW, pxH) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = pxW; canvas.height = pxH;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pxW, pxH);
+      ctx.drawImage(img, 0, 0, pxW, pxH);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = err => { URL.revokeObjectURL(url); reject(err); };
+    img.src = url;
+  });
+}
+
+function hexRgb(hex) {
+  const m = hex.match(/\w\w/g) || ['00', '00', '00'];
+  return m.map(h => parseInt(h, 16));
+}
+
+// this route's own lines + its number, shown in place within the outline of the whole
+// ward — so a volunteer can see where their patch sits in the bigger picture
+function routeMiniSVG(rt, wardBbox, wardOutline, aspect) {
+  let [minX, minY, maxX, maxY] = wardBbox;
+  let dx = maxX - minX, dy = maxY - minY;
+  minX -= dx * 0.04; maxX += dx * 0.04; minY -= dy * 0.04; maxY += dy * 0.04;
+  dx = maxX - minX; dy = maxY - minY;
+  const latScale = Math.cos((minY + maxY) / 2 * Math.PI / 180);
+  const target = aspect || 1;
+  if ((dx * latScale) / dy < target) { const add = (dy * target / latScale - dx) / 2; minX -= add; maxX += add; }
+  else { const add = (dx * latScale / target - dy) / 2; minY -= add; maxY += add; }
+  const W = 400, H = W * ((maxY - minY) / ((maxX - minX) * latScale));
+  const px = lon => (lon - minX) / (maxX - minX) * W;
+  const py = lat => H - (lat - minY) / (maxY - minY) * H;
+  const path = coords => coords.map((c, i) => `${i ? 'L' : 'M'}${px(c[0]).toFixed(1)} ${py(c[1]).toFixed(1)}`).join('');
+
+  const rings = (wardOutline.type === 'MultiPolygon' ? wardOutline.coordinates.flat() : wardOutline.coordinates);
+  const outline = rings.map(ring => `<path d="${path(ring)}Z" fill="#f6f6f6" stroke="#aaa" stroke-width="2.5"/>`).join('');
+
+  let route = '';
+  for (const f of rt.edges.features)
+    route += `<path d="${path(f.geometry.coordinates)}" fill="none" stroke="${rt.color}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`;
+
+  const c = turf.centroid(rt.footprint).geometry.coordinates;
+  const nx = px(c[0]).toFixed(1), ny = py(c[1]).toFixed(1);
+  return `<svg viewBox="0 0 ${W.toFixed(0)} ${H.toFixed(0)}" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100%" height="100%" fill="#fff"/>
+    ${outline}
+    ${route}
+    <circle cx="${nx}" cy="${ny}" r="15" fill="#fff" stroke="${rt.color}" stroke-width="2.5"/>
+    <text x="${nx}" y="${ny}" font-size="15" font-weight="700" fill="#111"
+      text-anchor="middle" dominant-baseline="central" style="font-family:system-ui">${rt.num || rt.id}</text>
+  </svg>`;
+}
+
+// whole-ward overview: every route's own lines in its own colour, numbered at its centroid
+function wardIndexSVG(routes, wm, wardBbox, wardOutline, aspect) {
+  let [minX, minY, maxX, maxY] = wardBbox;
+  let dx = maxX - minX, dy = maxY - minY;
+  minX -= dx * 0.04; maxX += dx * 0.04; minY -= dy * 0.04; maxY += dy * 0.04;
+  dx = maxX - minX; dy = maxY - minY;
+  const latScale = Math.cos((minY + maxY) / 2 * Math.PI / 180);
+  const target = aspect || 1.3;
+  if ((dx * latScale) / dy < target) { const add = (dy * target / latScale - dx) / 2; minX -= add; maxX += add; }
+  else { const add = (dx * latScale / target - dy) / 2; minY -= add; maxY += add; }
+  const W = 1400, H = W * ((maxY - minY) / ((maxX - minX) * latScale));
+  const px = lon => (lon - minX) / (maxX - minX) * W;
+  const py = lat => H - (lat - minY) / (maxY - minY) * H;
+  const path = coords => coords.map((c, i) => `${i ? 'L' : 'M'}${px(c[0]).toFixed(1)} ${py(c[1]).toFixed(1)}`).join('');
+  const inView = c => c[0] >= minX && c[0] <= maxX && c[1] >= minY && c[1] <= maxY;
+
+  const rings = (wardOutline.type === 'MultiPolygon' ? wardOutline.coordinates.flat() : wardOutline.coordinates);
+  const outline = rings.map(ring => `<path d="${path(ring)}Z" fill="#f6f6f6" stroke="#999" stroke-width="2"/>`).join('');
+
+  let roads = '';
+  for (const rd of (wm.roads || [])) {
+    if (!rd.coords.some(inView)) continue;
+    roads += `<path d="${path(rd.coords)}" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round"/>`;
+  }
+  let routePaths = '';
+  for (const rt of routes)
+    for (const f of rt.edges.features)
+      routePaths += `<path d="${path(f.geometry.coordinates)}" fill="none" stroke="${rt.color}" stroke-width="4.5" stroke-linecap="round" opacity="0.85"/>`;
+  let labels = '';
+  for (const rt of routes) {
+    const c = turf.centroid(rt.footprint).geometry.coordinates;
+    const x = px(c[0]).toFixed(1), y = py(c[1]).toFixed(1);
+    labels += `<circle cx="${x}" cy="${y}" r="16" fill="#fff" stroke="${rt.color}" stroke-width="2.5"/>` +
+      `<text x="${x}" y="${y}" font-size="16" font-weight="700" fill="#111" text-anchor="middle" dominant-baseline="central" style="font-family:system-ui">${rt.num || rt.id}</text>`;
+  }
+  return `<svg viewBox="0 0 ${W.toFixed(0)} ${H.toFixed(0)}" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100%" height="100%" fill="#fff"/>
+    ${outline}${roads}${routePaths}${labels}
+  </svg>`;
+}
+
+async function buildRoutesPackPdf() {
+  const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+  const pageW = 210, pageH = 297, margin = 15, contentW = pageW - margin * 2;
+  const instrLines = $('instructions').value.split('\n').map(l => l.replace(/^[•\-]\s*/, '').trim()).filter(Boolean);
+  const wm = wardMapData || { buildings: [], roads: [], pois: [] };
+  const wardOutline = selGeom;
+  const wardBbox = turf.bbox(wardOutline);
+
+  // ---- Index page: whole ward, every route numbered at its centroid ----
+  pdf.setFont(undefined, 'bold'); pdf.setFontSize(16); pdf.setTextColor(0);
+  pdf.text('Index — all routes', margin, margin);
+  const idxMapH = pageH - margin * 2 - 8;
+  const idxSvg = wardIndexSVG(lastResult.routes, wm, wardBbox, wardOutline, contentW / idxMapH);
+  const idxPng = await svgToPngDataUrl(idxSvg, mm2px(contentW), mm2px(idxMapH));
+  pdf.addImage(idxPng, 'PNG', margin, margin + 8, contentW, idxMapH);
+
+  const routeHeader = rt => {
+    let y = margin;
+    const [r, g, b] = hexRgb(rt.color);
+    pdf.setFillColor(r, g, b);
+    pdf.rect(margin, y - 4, 5, 5, 'F');
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(13); pdf.setTextColor(0);
+    pdf.text(`Route ${rt.num || rt.id}${rt.name ? ': ' + rt.name : ''}`, margin + 8, y);
+    y += 4;
+    pdf.setDrawColor(20); pdf.setLineWidth(0.4);
+    pdf.line(margin, y, pageW - margin, y);
+    return y + 6;
+  };
+
+  for (const rt of lastResult.routes) {
+    // one route = one flowing document: sections pack onto shared pages, a new page
+    // only where content genuinely doesn't fit — not a hard break per section
+    pdf.addPage();
+    let y = routeHeader(rt);
+
+    // a) minimap + instructions, two columns
+    const miniSize = 55;
+    const miniSvg = routeMiniSVG(rt, wardBbox, wardOutline, 1);
+    const miniPng = await svgToPngDataUrl(miniSvg, mm2px(miniSize), mm2px(miniSize));
+    pdf.addImage(miniPng, 'PNG', margin, y, miniSize, miniSize);
+    const textX = margin + miniSize + 8, textW = contentW - miniSize - 8;
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
+    pdf.text('Instructions for volunteers', textX, y + 4);
+    let iy = y + 10;
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(9.5);
+    for (const line of instrLines) {
+      const wrapped = pdf.splitTextToSize('•  ' + line, textW);
+      pdf.text(wrapped, textX, iy);
+      iy += wrapped.length * 4.6;
+    }
+    y += miniSize + 10;
+
+    // b) the map — only a fresh page if it wouldn't get reasonable room here
+    const mapH = 90;
+    if (y + mapH > pageH - margin) { pdf.addPage(); y = routeHeader(rt); }
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(10); pdf.setTextColor(70);
+    let meta = `${rt.addresses} addresses`;
+    if (rt.walk_km) meta += ` · ${rt.walk_km} km`;
+    const mins = Math.round((rt.walk_km || 0) / 4 * 60 + rt.addresses * 0.25);
+    if (mins) meta += ` · ~${mins} min`;
+    if (rt.main) meta += ` · Main road: ${rt.main}`;
+    if (rt.top) meta += ` · start at the top, walk downhill`;
+    pdf.text(meta, margin, y);
+    y += 6;
+    const svgStr = routeSVG(rt, contentW / mapH);
+    const png = await svgToPngDataUrl(svgStr, mm2px(contentW), mm2px(mapH));
+    pdf.addImage(png, 'PNG', margin, y, contentW, mapH);
+    y += mapH + 8;
+
+    // c) suggested walk order
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(9.5);
+    const orderLines = pdf.splitTextToSize((rt.order || []).join('  ->  '), contentW);
+    const orderH = 6 + orderLines.length * 4.6;
+    if (y + orderH > pageH - margin) { pdf.addPage(); y = routeHeader(rt); }
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
+    pdf.text('Suggested walk order', margin, y); y += 6;
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(9.5);
+    pdf.text(orderLines, margin, y);
+    y += orderLines.length * 4.6 + 8;
+
+    // d) streets
+    if (y + 12 > pageH - margin) { pdf.addPage(); y = routeHeader(rt); }
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(12);
+    pdf.text('Streets', margin, y); y += 6;
+    const rowH = 6, col2 = pageW - margin - 45, col3 = pageW - margin - 15;
+    pdf.setFontSize(9.5);
+    for (const s of rt.streets) {
+      if (y > pageH - margin - rowH) { pdf.addPage(); y = routeHeader(rt); }
+      pdf.setDrawColor(215);
+      pdf.line(margin, y + 1.8, pageW - margin, y + 1.8);
+      let label = s.name + (s.partial ? '  (PART — see map)' : '');
+      label = pdf.splitTextToSize(label, col2 - margin - 3)[0];
+      pdf.setFont(undefined, 'normal');
+      pdf.text(label, margin + 1, y);
+      pdf.text(String(s.addresses), col2, y);
+      pdf.rect(col3, y - 3.2, 3.5, 3.5);
+      y += rowH;
+    }
+    y += 8;
+
+    // e) notes — fills whatever gap is left on this page; only starts a fresh page
+    // if less than 10% of a page remains, so it's never squeezed into a sliver
+    const usableH = pageH - margin * 2;
+    if ((pageH - margin - y) < usableH * 0.10) { pdf.addPage(); y = routeHeader(rt); }
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
+    pdf.text('Notes', margin, y); y += 8;
+    pdf.setFont(undefined, 'normal'); pdf.setFontSize(10.5);
+    if (rt.notes) {
+      pdf.text(pdf.splitTextToSize(rt.notes, contentW), margin, y);
+    } else {
+      pdf.setDrawColor(220);
+      for (let ly = y; ly < pageH - margin; ly += 8) pdf.line(margin, ly, pageW - margin, ly);
+    }
+  }
+  return pdf;
+}
+
+function pdfStatus(msg) {
+  const el = $('pdfstatus');
+  if (msg == null) { el.style.display = 'none'; return; }
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+$('printpdf').addEventListener('click', async () => {
+  if (!lastResult) return;
+  $('printpdf').disabled = true;
+  pdfStatus('⏳ Building routes pack PDF…');
+  try {
+    if (!wardMapData) await fetchWardMap();
+    for (const rt of lastResult.routes) if (!rt.footprint) rt.footprint = computeFootprint(rt);
+    const pdf = await buildRoutesPackPdf();
+    pdf.save('routes-pack.pdf');
+    pdfStatus('✅ Routes pack PDF downloaded.');
+    setTimeout(() => pdfStatus(null), 3000);
+  } catch (err) {
+    pdfStatus('❌ PDF failed: ' + err.message);
+    setTimeout(() => pdfStatus(null), 5000);
+  } finally {
+    $('printpdf').disabled = false;
+  }
+});
+
+// =============================== boot ===============================
+restoreState();
+</script>
+</body>
+</html>
