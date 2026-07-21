@@ -23,16 +23,16 @@ from pydantic import BaseModel
 from shapely.geometry import LineString, MultiPoint, mapping, shape
 from shapely.ops import unary_union
 
-# The public overpass-api.de instance throttles/queues cloud-datacenter IPs far more
-# aggressively than a home connection — osmnx's default "politely wait for a slot"
-# behaviour can then hang long enough to look completely stuck to the user (confirmed:
-# a Cloud Run deploy 504'd on /addresses waiting on it). requests_timeout + no
-# polite-queue waiting means a slow/blocked request fails fast into the existing
-# try/except fallback instead. OVERPASS_ENDPOINT lets a mirror be swapped in without a
-# code change if overpass-api.de itself is down — kumi.systems was tried and is
-# currently unreachable, so the default stays overpass-api.de (confirmed responsive).
-ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass-api.de/api")
-ox.settings.requests_timeout = 60
+# overpass-api.de silently blocks outbound connections from Cloud Run's shared IP
+# ranges at the network level (confirmed: ConnectTimeout, never even reaches the
+# server — same query works instantly from a home connection). kumi.systems does
+# accept the connection from Cloud Run, it's just slower to answer under load
+# (confirmed: ReadTimeout at 60s, so raise the ceiling rather than switch again).
+# osmnx's default "politely wait for a slot" behaviour is disabled too — a slow/
+# blocked request should fail into the existing try/except fallback, not hang
+# quietly past Cloud Run's own request timeout looking stuck to the user.
+ox.settings.overpass_url = os.environ.get("OVERPASS_ENDPOINT", "https://overpass.kumi.systems/api")
+ox.settings.requests_timeout = 120
 ox.settings.overpass_rate_limit = False
 
 app = FastAPI()
