@@ -776,7 +776,8 @@ def addresses(req: PolyReq):
     if addrs is None:
         try:
             addrs = ox.features_from_polygon(poly, tags={"addr:housenumber": True})
-        except Exception:
+        except Exception as e:
+            print(f"addresses: Overpass fetch failed: {type(e).__name__}: {e}")
             addrs = None
     empty = {"points": {"type": "FeatureCollection", "features": []},
              "commercial_geom": None, "industrial_geom": None, "field_geom": None,
