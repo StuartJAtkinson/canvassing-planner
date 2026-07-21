@@ -153,4 +153,4 @@ jobs:
             --timeout=300
 
       - name: Print URL
-        run: echo "Deployed: ${{ steps.deploy.outputs.url }}"
+        run: echo "Deployed at ${{ steps.deploy.outputs.url }}"
