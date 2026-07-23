@@ -204,6 +204,7 @@
     <button class="btn secondary" id="fixoverlaps" style="display:none">🩹 Fix overlapping roads</button>
     <button class="btn secondary" id="attachorphans" style="display:none"></button>
     <div id="routelinks"></div>
+    <button class="btn secondary" id="saveward">💾 Save ward</button>
   </div>
 
   <div id="progress" style="display:none">
@@ -244,7 +245,10 @@
     </div>
     <div id="sparsesidebar">
       <div id="sparselist"></div>
-      <button class="btn secondary" id="printpdf">📕 Routes Pack PDF</button>
+      <button class="btn secondary" id="printpdf" data-fmt="jpeg">📕 Whole pack (small)</button>
+      <button class="btn secondary" id="printpdfhq" data-fmt="png">📕 Whole pack (HQ)</button>
+      <button class="btn secondary" id="printpdfroute" data-fmt="jpeg" data-route="1">📄 This route (small)</button>
+      <button class="btn secondary" id="printpdfroutehq" data-fmt="png" data-route="1">📄 This route (HQ)</button>
     </div>
   </div>
 </div>
@@ -284,6 +288,7 @@ let draftCutout = null;               // GeoJSON geometry: land about to be cut,
 let draftCutoutLayer = null;          // its hatch-filled Leaflet layer (draw/erase brushes edit it)
 let editingShape = false;             // vertex-edit toggle on workingLayer
 let wardLayer = null, wardGeom = null;
+let loadedFromCheckpoint = false;     // routes came from a "Save ward" checkpoint, not a fresh plan
 
 // =============================== step machine ===============================
 const STEP_NAMES = { 1: 'Choose ward', 2: 'Addresses', 3: 'Area cutout', 4: 'Snap to roads', 5: 'Plan', 6: 'Routes' };
@@ -303,7 +308,6 @@ function gotoStep(n) {
   $('stepback').style.display = n > 1 ? 'block' : 'none';
   updateNav();
   if (n === 2 && wardGeom && !lastAddrResult) loadAddresses();
-  saveState();
 }
 
 function updateNav() {
@@ -320,8 +324,15 @@ $('stepback').addEventListener('click', () => {
 
 // Editing an earlier step invalidates everything computed after it. Ask once, then drop
 // the plan (the only expensive later-step data) so the process never overlaps itself.
-function confirmRewind() {
+// A loaded checkpoint only kept the final routes (see "Save ward") — it has none of the
+// raw drawing/graph state pre-routing steps need, so it can't resume editing there at all.
+function confirmRewind(allowFromCheckpoint = false) {
   if (!lastResult) return true;
+  if (loadedFromCheckpoint && !allowFromCheckpoint) {
+    alert('This plan was loaded from a save, which only keeps the finished routes — the '
+        + 'cutout/snap steps aren\'t available from it. Need to start from scratch.');
+    return false;
+  }
   if (!confirm('Editing this will clear all data for steps after — proceed?')) return false;
   clearPlanData();
   return true;
@@ -343,62 +354,9 @@ function clearPlanData() {
   $('fixoverlaps').style.display = 'none';
   addrLayer.addTo(map);   // render() hides the dots — bring them back for the wizard steps
   updateNav();
-  saveState();
 }
 
-// =============================== persistence ===============================
-// Everything the wizard knows, saved after every step transition and mutation, so a
-// refresh resumes exactly where you were. Reset (top right) is the only way to wipe it.
-function saveState() {
-  try {
-    const result = lastResult
-      ? JSON.parse(JSON.stringify(lastResult,
-          (k, v) => (k === 'layer' || k === 'hoverLayer' || k === 'footprint' || k === 'mapdata') ? undefined : v))
-      : null;
-    localStorage.setItem('state', JSON.stringify({
-      step, wardGeom, selGeom, shapeModified, label: $('wardsearch').value, result, orphans,
-    }));
-  } catch (e) { /* quota — a huge ward may not fit; losing persistence is fine */ }
-}
-
-function restoreState() {
-  let st = null;
-  try { st = JSON.parse(localStorage.getItem('state') || 'null'); } catch (e) {}
-  // migrate the previous two-key format so an existing saved plan isn't lost
-  if (!st) {
-    try {
-      const plan = JSON.parse(localStorage.getItem('lastPlan') || 'null');
-      const ctx = JSON.parse(localStorage.getItem('lastPlanCtx') || 'null');
-      if (plan && ctx) st = { step: 6, wardGeom: ctx.wardGeom, selGeom: ctx.selGeom,
-                              shapeModified: ctx.shapeModified, label: ctx.label, result: plan };
-      localStorage.removeItem('lastPlan'); localStorage.removeItem('lastPlanCtx');
-    } catch (e) {}
-  }
-  if (!st || !st.wardGeom) { gotoStep(1); return; }
-  try {
-    wardGeom = st.wardGeom;
-    selGeom = st.selGeom || st.wardGeom;
-    shapeModified = !!st.shapeModified;
-    $('wardsearch').value = st.label || '';
-    wardLayer = L.geoJSON(wardGeom, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
-    redrawWorking();
-    map.fitBounds(wardLayer.getBounds());
-    $('plan').disabled = false;
-    orphans = st.orphans || [];
-    if (st.result) { render(st.result, { quiet: true }); prepareRoutes(st.result); }
-    gotoStep(Math.min(st.step || 1, st.result ? 6 : 5));
-    if (selGeom) loadAddresses();  // background — re-enables Suggest + the live estimate
-    $('status').textContent = 'Previous session restored — 🧹 Reset (top right) for a blank slate.';
-  } catch (e) {
-    localStorage.removeItem('state');
-    gotoStep(1);
-  }
-}
-
-$('resetall').addEventListener('click', () => {
-  localStorage.removeItem('state');
-  location.reload();
-});
+$('resetall').addEventListener('click', () => location.reload());
 
 // =============================== ward search ===============================
 $('wardsearch').addEventListener('keydown', async e => {
@@ -422,8 +380,12 @@ $('wardsearch').addEventListener('keydown', async e => {
   } catch { $('wardresults').innerHTML = '<div>Ward service unavailable.</div>'; }
 });
 
+function clientSlug(label) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 async function selectWard(code, label) {
-  if (!confirmRewind()) return;
+  if (!confirmRewind(true)) return;   // switching wards is a fresh start, not a rewind of the current one
   $('wardresults').innerHTML = '';
   $('wardsearch').value = label;
   if (wardLayer) { map.removeLayer(wardLayer); wardLayer = null; }
@@ -437,8 +399,27 @@ async function selectWard(code, label) {
   $('plan').disabled = false;
   resetWizard();
   redrawWorking();          // shade the whole ward immediately — cutouts erase holes in this
-  $('status').textContent = `Ward "${label}" selected.`;
-  gotoStep(2);              // auto-advance; addresses load on entry
+  loadedFromCheckpoint = false;
+
+  $('status').textContent = `Ward "${label}" selected — checking for a save…`;
+  let save = null;
+  try {
+    const r = await fetch(`/save/${clientSlug(label)}`);
+    if (r.ok) save = await r.json();
+  } catch (e) { /* no save reachable — plan fresh */ }
+
+  if (save) {
+    loadedFromCheckpoint = true;
+    selGeom = save.ward_polygon;
+    const res = { routes: save.routes };
+    render(res, { quiet: true });
+    prepareRoutes(res);
+    gotoStep(6);
+    $('status').textContent = `Loaded saved plan for "${label}" (${new Date(save.saved_at).toLocaleString()}).`;
+  } else {
+    $('status').textContent = `Ward "${label}" selected.`;
+    gotoStep(2);              // auto-advance; addresses load on entry
+  }
 }
 
 function resetWizard() {
@@ -487,7 +468,7 @@ function redrawWorking() {
 function enableShapeEditing() {
   workingLayer.eachLayer(l => {
     l.pm.enable();
-    l.on('pm:edit', () => { selGeom = l.toGeoJSON().geometry; shapeModified = true; recomputeAddrCount(); saveState(); });
+    l.on('pm:edit', () => { selGeom = l.toGeoJSON().geometry; shapeModified = true; recomputeAddrCount(); });
   });
 }
 
@@ -621,7 +602,6 @@ $('cutout-apply').addEventListener('click', () => {
     shapeModified = true;
     redrawWorking();
     recomputeAddrCount();
-    saveState();
   }
   clearDraftCutout();
 });
@@ -665,7 +645,6 @@ $('snap').addEventListener('click', async () => {
     shapeModified = true;
     redrawWorking();
     recomputeAddrCount();
-    saveState();
     $('status').textContent = `Shape snapped, expanded ~5 m and straightened (~${before} → ~${after} points) — Tweak the vertices if needed.`;
   } catch (err) {
     $('status').textContent = '❌ ' + err.message;
@@ -761,7 +740,7 @@ async function prepareRoutes(res) {
 }
 
 $('plan').addEventListener('click', async () => {
-  if (!selGeom || !confirmRewind()) return;
+  if (!selGeom || !confirmRewind(true)) return;
   $('plan').disabled = true;
   $('log').innerHTML = '';
   $('status').textContent = '⏳ Planning…';
@@ -789,7 +768,7 @@ $('plan').addEventListener('click', async () => {
         else if (j.progress) showProgress(`${j.progress.label}… ${j.progress.done}/${j.progress.total}`,
                                           j.progress.done / j.progress.total);
         else if (j.error) throw new Error(j.error);
-        else if (j.result) { render(j.result); gotoStep(6); prepareRoutes(j.result); }
+        else if (j.result) { loadedFromCheckpoint = false; render(j.result); gotoStep(6); prepareRoutes(j.result); }
       }
     }
   } catch (err) {
@@ -797,6 +776,33 @@ $('plan').addEventListener('click', async () => {
     hideProgress();
   }
   $('plan').disabled = false;
+});
+
+// Checkpoint save: routes only (edges/color/order/walk/notes/etc — already JSON-plain
+// except the Leaflet layers, stripped below), not the raw drawing/graph state — that's
+// the trade the user asked for: smaller save, but pre-routing steps can't be resumed
+// from it (see confirmRewind's "Need to start from scratch" case).
+$('saveward').addEventListener('click', async () => {
+  if (!lastResult) return;
+  const btn = $('saveward');
+  btn.disabled = true; btn.textContent = '⏳ Saving…';
+  try {
+    const routes = JSON.parse(JSON.stringify(lastResult.routes,
+      (k, v) => (k === 'layer' || k === 'hoverLayer' || k === 'footprint') ? undefined : v));
+    const r = await fetch('/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ward_label: $('wardsearch').value, ward_polygon: selGeom, routes }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    btn.textContent = '✅ Saved';
+    setTimeout(() => { btn.textContent = '💾 Save ward'; }, 2000);
+  } catch (err) {
+    btn.textContent = '❌ ' + err.message;
+    setTimeout(() => { btn.textContent = '💾 Save ward'; }, 3000);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // =============================== routes on the map ===============================
@@ -881,7 +887,6 @@ function render(res, opts = {}) {
   $('fixoverlaps').style.display = 'block';
   updateOrphanUI();
   updateNav();
-  if (!opts.quiet) saveState();
 }
 
 // dashed grey overlay of streets awaiting a new route + the attach button's count
@@ -1099,7 +1104,6 @@ function buildDocPages(rt) {
     </div>`;
   $('docnotes').value = rt.notes;
   $('docnotes').addEventListener('input', e => { rt.notes = e.target.value; $('docnotesprint').textContent = e.target.value; });
-  $('docnotes').addEventListener('change', saveState);
   $('docnotesprint').textContent = rt.notes;
 }
 
@@ -1981,7 +1985,6 @@ function refreshLayer(rt) {
 function refreshRoute(rt) {
   refreshLayer(rt);
   refreshDoc(rt);               // keeps the erase toggle as-is for multi-segment edits
-  saveState();
 }
 
 $('docreset').addEventListener('click', resetRoute);
@@ -2013,12 +2016,13 @@ window.addEventListener('afterprint', () => document.body.classList.remove('prin
 // its own page instead of the browser guessing where content overflows) ---
 function mm2px(mm, dpi = 110) { return Math.round(mm * dpi / 25.4); }
 
-// rasterise an SVG string to a JPEG data URL via an offscreen canvas — routeSVG already
+// rasterise an SVG string to a raster data URL via an offscreen canvas — routeSVG already
 // inlines every style as attributes, so this needs no stylesheet/DOM attachment.
-// JPEG (not PNG): these maps are dense line-art with lots of anti-aliased edges, which
-// PNG compresses poorly — a fully-opaque JPEG at high quality is a fraction of the size
-// with no visible difference, and is what was blowing the pack up to 160MB+.
-function svgToPngDataUrl(svgStr, pxW, pxH) {
+// fmt 'jpeg' (default, small pack): these maps are dense line-art with lots of anti-aliased
+// edges, which PNG compresses poorly — a fully-opaque JPEG at high quality is a fraction of
+// the size with no visible difference, and is what was blowing the pack up to 160MB+.
+// fmt 'png': lossless, for when quality matters more than file size.
+function svgToPngDataUrl(svgStr, pxW, pxH, fmt = 'jpeg') {
   return new Promise((resolve, reject) => {
     const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -2030,7 +2034,7 @@ function svgToPngDataUrl(svgStr, pxW, pxH) {
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pxW, pxH);
       ctx.drawImage(img, 0, 0, pxW, pxH);
       URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/jpeg', 0.88));
+      resolve(fmt === 'png' ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.6));
     };
     img.onerror = err => { URL.revokeObjectURL(url); reject(err); };
     img.src = url;
@@ -2118,21 +2122,26 @@ function wardIndexSVG(routes, wm, wardBbox, wardOutline, aspect) {
   </svg>`;
 }
 
-async function buildRoutesPackPdf() {
+async function buildRoutesPackPdf(fmt = 'jpeg', onlyRoute = null) {
+  const imgFmt = fmt === 'png' ? 'PNG' : 'JPEG';
   const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', compress: true });
   const pageW = 210, pageH = 297, margin = 15, contentW = pageW - margin * 2;
   const instrLines = $('instructions').value.split('\n').map(l => l.replace(/^[•\-]\s*/, '').trim()).filter(Boolean);
   const wm = wardMapData || { buildings: [], roads: [], pois: [] };
   const wardOutline = selGeom;
   const wardBbox = turf.bbox(wardOutline);
+  const routes = onlyRoute ? [onlyRoute] : lastResult.routes;
 
-  // ---- Index page: whole ward, every route numbered at its centroid ----
-  pdf.setFont(undefined, 'bold'); pdf.setFontSize(16); pdf.setTextColor(0);
-  pdf.text('Index — all routes', margin, margin);
-  const idxMapH = pageH - margin * 2 - 8;
-  const idxSvg = wardIndexSVG(lastResult.routes, wm, wardBbox, wardOutline, contentW / idxMapH);
-  const idxPng = await svgToPngDataUrl(idxSvg, mm2px(contentW), mm2px(idxMapH));
-  pdf.addImage(idxPng, 'JPEG', margin, margin + 8, contentW, idxMapH);
+  // ---- Index page: whole ward, every route numbered at its centroid (skipped for a
+  // single-route export — there's nothing to index) ----
+  if (!onlyRoute) {
+    pdf.setFont(undefined, 'bold'); pdf.setFontSize(16); pdf.setTextColor(0);
+    pdf.text('Index — all routes', margin, margin);
+    const idxMapH = pageH - margin * 2 - 8;
+    const idxSvg = wardIndexSVG(lastResult.routes, wm, wardBbox, wardOutline, contentW / idxMapH);
+    const idxPng = await svgToPngDataUrl(idxSvg, mm2px(contentW), mm2px(idxMapH), fmt);
+    pdf.addImage(idxPng, imgFmt, margin, margin + 8, contentW, idxMapH);
+  }
 
   const routeHeader = rt => {
     let y = margin;
@@ -2147,17 +2156,19 @@ async function buildRoutesPackPdf() {
     return y + 6;
   };
 
-  for (const rt of lastResult.routes) {
+  for (const rt of routes) {
     // one route = one flowing document: sections pack onto shared pages, a new page
-    // only where content genuinely doesn't fit — not a hard break per section
-    pdf.addPage();
+    // only where content genuinely doesn't fit — not a hard break per section.
+    // (skip the addPage on the very first route of a single-route export — page 1 is
+    // still blank since there was no index page to occupy it)
+    if (rt !== routes[0] || !onlyRoute) pdf.addPage();
     let y = routeHeader(rt);
 
     // a) minimap + instructions, two columns
     const miniSize = 55;
     const miniSvg = routeMiniSVG(rt, wardBbox, wardOutline, 1);
-    const miniPng = await svgToPngDataUrl(miniSvg, mm2px(miniSize), mm2px(miniSize));
-    pdf.addImage(miniPng, 'JPEG', margin, y, miniSize, miniSize);
+    const miniPng = await svgToPngDataUrl(miniSvg, mm2px(miniSize), mm2px(miniSize), fmt);
+    pdf.addImage(miniPng, imgFmt, margin, y, miniSize, miniSize);
     const textX = margin + miniSize + 8, textW = contentW - miniSize - 8;
     pdf.setFont(undefined, 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
     pdf.text('Instructions for volunteers', textX, y + 4);
@@ -2183,8 +2194,8 @@ async function buildRoutesPackPdf() {
     pdf.text(meta, margin, y);
     y += 6;
     const svgStr = routeSVG(rt, contentW / mapH);
-    const png = await svgToPngDataUrl(svgStr, mm2px(contentW), mm2px(mapH));
-    pdf.addImage(png, 'JPEG', margin, y, contentW, mapH);
+    const png = await svgToPngDataUrl(svgStr, mm2px(contentW), mm2px(mapH), fmt);
+    pdf.addImage(png, imgFmt, margin, y, contentW, mapH);
     y += mapH + 8;
 
     // c) suggested walk order
@@ -2242,27 +2253,34 @@ function pdfStatus(msg) {
   el.style.display = 'block';
 }
 
-$('printpdf').addEventListener('click', async () => {
-  if (!lastResult) return;
-  $('printpdf').disabled = true;
-  pdfStatus('⏳ Building routes pack PDF…');
-  try {
-    if (!wardMapData) await fetchWardMap();
-    for (const rt of lastResult.routes) if (!rt.footprint) rt.footprint = computeFootprint(rt);
-    const pdf = await buildRoutesPackPdf();
-    pdf.save('routes-pack.pdf');
-    pdfStatus('✅ Routes pack PDF downloaded.');
-    setTimeout(() => pdfStatus(null), 3000);
-  } catch (err) {
-    pdfStatus('❌ PDF failed: ' + err.message);
-    setTimeout(() => pdfStatus(null), 5000);
-  } finally {
-    $('printpdf').disabled = false;
-  }
-});
+const pdfButtons = [$('printpdf'), $('printpdfhq'), $('printpdfroute'), $('printpdfroutehq')];
+for (const btn of pdfButtons) {
+  btn.addEventListener('click', async () => {
+    if (!lastResult) return;
+    const fmt = btn.dataset.fmt;
+    const onlyRoute = btn.dataset.route ? currentRoute() : null;
+    if (btn.dataset.route && !onlyRoute) return;
+    for (const b of pdfButtons) b.disabled = true;
+    pdfStatus(`⏳ Building ${onlyRoute ? 'route' : 'routes pack'} PDF (${fmt === 'png' ? 'HQ PNG' : 'small JPG'})…`);
+    try {
+      if (!wardMapData) await fetchWardMap();
+      for (const rt of lastResult.routes) if (!rt.footprint) rt.footprint = computeFootprint(rt);
+      const pdf = await buildRoutesPackPdf(fmt, onlyRoute);
+      const base = onlyRoute ? `route-${onlyRoute.num || onlyRoute.id}` : 'routes-pack';
+      pdf.save(fmt === 'png' ? `${base}-hq.pdf` : `${base}.pdf`);
+      pdfStatus('✅ PDF downloaded.');
+      setTimeout(() => pdfStatus(null), 3000);
+    } catch (err) {
+      pdfStatus('❌ PDF failed: ' + err.message);
+      setTimeout(() => pdfStatus(null), 5000);
+    } finally {
+      for (const b of pdfButtons) b.disabled = false;
+    }
+  });
+}
 
 // =============================== boot ===============================
-restoreState();
+gotoStep(1);   // always starts clear — "Save ward" replaces the old full-state autosave
 </script>
 </body>
 </html>

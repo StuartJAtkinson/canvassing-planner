@@ -61,6 +61,22 @@ gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL \
 
 No Cloud SQL / runtime service account step is needed — this app has no database.
 
+### Ward saves bucket (runtime, not the CI/CD service account above)
+
+One small GCS bucket holds the "Save ward" checkpoints — one JSON blob per ward.
+The *runtime* Cloud Run service account (the project's default compute SA, since
+no `--service-account` flag is set on deploy) needs write access to it:
+
+```bash
+gsutil mb -l europe-west2 gs://canvassing-planner-saves
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+gsutil iam ch \
+  serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com:roles/storage.objectAdmin \
+  gs://canvassing-planner-saves
+```
+
+The bucket name is passed to the app via the `SAVE_BUCKET` env var (see step 6).
+
 ## 5. Set up Workload Identity Federation
 
 Keyless auth — GitHub Actions authenticates to GCP without a stored service account key.
@@ -96,6 +112,8 @@ Go to **Settings → Secrets and variables → Actions**.
 |------|-------|
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | The `projects/.../providers/github-provider` string from step 5 |
 | `GCP_SERVICE_ACCOUNT` | `canvassing-deployer@canvassing-planner-prod.iam.gserviceaccount.com` |
+| `APP_AUTH_USER` | The single shared login username — the whole app sits behind HTTP Basic Auth |
+| `APP_AUTH_PASSWORD` | The matching password |
 
 ### Variables
 
@@ -103,6 +121,12 @@ Go to **Settings → Secrets and variables → Actions**.
 |------|-------|
 | `GCP_PROJECT_ID` | `canvassing-planner-prod` — **setting this activates the deploy job** |
 | `GCP_REGION` | `europe-west2` |
+
+There's no user database — `AUTH_USER`/`AUTH_PASSWORD` are one shared credential
+for the whole trusted group, checked by a small ASGI middleware in `app.py`
+(stdlib `base64` + `secrets.compare_digest`, no session/cookie). If either env
+var is unset the app fails closed — every request gets 401 rather than running
+open.
 
 ## 7. First deploy
 

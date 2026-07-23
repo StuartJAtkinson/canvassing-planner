@@ -2,15 +2,19 @@
 
 Run:  uvicorn app:app --port 8000   →  http://localhost:8000
 """
+import base64
 import concurrent.futures
 import hashlib
 import heapq
 import math
 import json
 import os
+import re
+import secrets
 import sqlite3
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import geopandas as gpd
@@ -18,10 +22,10 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd  # already a geopandas dependency — used here for boolean masking
 import requests
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from shapely.geometry import LineString, MultiPoint, mapping, shape
+from shapely.geometry import LineString, MultiPoint, box, mapping, shape
 from shapely.ops import unary_union
 
 # overpass-api.de silently blocks outbound connections from Cloud Run's shared IP
@@ -48,6 +52,30 @@ def with_deadline(fn, *args, deadline, **kwargs):
     return _bg_pool.submit(fn, *args, **kwargs).result(timeout=deadline)
 
 app = FastAPI()
+
+# Single shared credential for a trusted group — no user DB, no sessions, matching how
+# this tool is actually used. Fails closed: if the env vars aren't set, every request
+# gets 401 rather than the app silently running open.
+AUTH_USER = os.environ.get("AUTH_USER")
+AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD")
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    unauthorized = Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
+    if not AUTH_USER or not AUTH_PASSWORD:
+        return unauthorized
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Basic "):
+        return unauthorized
+    try:
+        user, pw = base64.b64decode(header[6:]).decode("utf-8").split(":", 1)
+    except Exception:
+        return unauthorized
+    if not (secrets.compare_digest(user, AUTH_USER) and secrets.compare_digest(pw, AUTH_PASSWORD)):
+        return unauthorized
+    return await call_next(request)
+
 
 UPRN_DB = Path(__file__).parent / "data" / "uprn.sqlite"
 
@@ -122,6 +150,24 @@ def to_wgs84(geom_3857):
     """EPSG:3857 shapely geometry -> EPSG:4326, for geometry returned to the browser
     (fetch_landuse_blobs works in 3857 for accurate metre-based .within() checks)."""
     return gpd.GeoSeries([geom_3857], crs=3857).to_crs(4326).iloc[0]
+
+
+def split_grid(poly, n=3):
+    """poly's bbox cut into an n×n grid, each cell intersected with poly. A single big
+    Overpass query for a whole ward is what times out from Cloud Run; splitting into
+    several smaller ones (fetched in parallel, see /addresses) finishes more of them
+    inside any given deadline, matching the per-piece pattern get_graph already uses
+    for MultiPolygon wards."""
+    minx, miny, maxx, maxy = poly.bounds
+    dx, dy = (maxx - minx) / n, (maxy - miny) / n
+    pieces = []
+    for i in range(n):
+        for j in range(n):
+            cell = box(minx + i * dx, miny + j * dy, minx + (i + 1) * dx, miny + (j + 1) * dy)
+            piece = poly.intersection(cell)
+            if not piece.is_empty:
+                pieces.append(piece)
+    return pieces or [poly]
 
 
 def fetch_landuse_blobs(poly):
@@ -217,6 +263,16 @@ class RerouteReq(BaseModel):
     allowed: list = []         # street names eligible for the walk-order list
     top: dict | None = None    # {"lat","lon"} of the route's start marker, if any
     use_elevation: bool = False   # recompute the start point from terrain (Label Routes) instead of keeping top
+
+
+class SaveReq(BaseModel):
+    ward_label: str
+    ward_polygon: dict
+    routes: list
+
+
+def ward_slug(label):
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
 
 
 @app.get("/")
@@ -788,12 +844,22 @@ def addresses(req: PolyReq):
     poly = clean_poly(req.polygon)
     addrs = load_uprn(poly)
     if addrs is None:
-        try:
-            addrs = with_deadline(ox.features_from_polygon, poly,
-                                   tags={"addr:housenumber": True}, deadline=90)
-        except Exception as e:
-            print(f"addresses: Overpass fetch failed: {type(e).__name__}: {e}")
-            addrs = None
+        pieces = split_grid(poly, n=3)
+        futures = {_bg_pool.submit(ox.features_from_polygon, p,
+                                    tags={"addr:housenumber": True}): i
+                   for i, p in enumerate(pieces)}
+        # overall cap leaves headroom under Cloud Run's --timeout=300; wait() (unlike
+        # as_completed) never raises on timeout — pieces still running are abandoned
+        # (see with_deadline) and just left out, so partial real data beats an
+        # all-or-nothing timeout.
+        done, _pending = concurrent.futures.wait(futures, timeout=240)
+        parts = []
+        for fut in done:
+            try:
+                parts.append(fut.result())
+            except Exception as e:
+                print(f"addresses: piece {futures[fut]} failed: {type(e).__name__}: {e}")
+        addrs = pd.concat(parts) if parts else None
     empty = {"points": {"type": "FeatureCollection", "features": []},
              "commercial_geom": None, "industrial_geom": None, "field_geom": None,
              "counts": {"residential": 0, "commercial": 0, "industrial": 0}}
@@ -971,6 +1037,46 @@ def plan(req: PlanReq):
         except Exception as e:
             yield json.dumps({"error": f"Planning failed: {e}"}) + "\n"
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+# Ward save/checkpoint — one JSON blob per ward in GCS (Cloud Run instances are stateless
+# and multi-instance, so local disk can't be relied on to persist or be shared).
+SAVE_BUCKET = os.environ.get("SAVE_BUCKET")
+_gcs_bucket = None
+
+
+def _bucket():
+    global _gcs_bucket
+    if _gcs_bucket is None:
+        from google.cloud import storage
+        _gcs_bucket = storage.Client().bucket(SAVE_BUCKET)
+    return _gcs_bucket
+
+
+@app.get("/save/{slug}")
+def get_save(slug: str):
+    if not SAVE_BUCKET:
+        return JSONResponse({"error": "saving is not configured"}, status_code=501)
+    blob = _bucket().blob(f"{slug}.json")
+    if not blob.exists():
+        return JSONResponse({"error": "no save for this ward"}, status_code=404)
+    return JSONResponse(json.loads(blob.download_as_text()))
+
+
+@app.post("/save")
+def save(req: SaveReq):
+    if not SAVE_BUCKET:
+        return JSONResponse({"error": "saving is not configured"}, status_code=501)
+    slug = ward_slug(req.ward_label)
+    data = {
+        "ward_label": req.ward_label,
+        "ward_polygon": req.ward_polygon,
+        "routes": req.routes,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _bucket().blob(f"{slug}.json").upload_from_string(
+        json.dumps(data), content_type="application/json")
+    return {"ok": True, "slug": slug}
 
 
 if __name__ == "__main__":

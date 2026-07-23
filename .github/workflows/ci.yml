@@ -102,6 +102,7 @@ jobs:
   # Secrets needed (Settings → Secrets):
   #   GCP_WORKLOAD_IDENTITY_PROVIDER  — projects/NUMBER/locations/global/workloadIdentityPools/...
   #   GCP_SERVICE_ACCOUNT             — canvassing-deployer@PROJECT.iam.gserviceaccount.com
+  #   APP_AUTH_USER / APP_AUTH_PASSWORD — the single shared login for the whole app (Basic Auth)
 
   deploy:
     name: Deploy to Cloud Run
@@ -151,6 +152,7 @@ jobs:
             --cpu=2
             --concurrency=20
             --timeout=300
+            --set-env-vars=SAVE_BUCKET=canvassing-planner-saves,AUTH_USER=${{ secrets.APP_AUTH_USER }},AUTH_PASSWORD=${{ secrets.APP_AUTH_PASSWORD }}
 
       - name: Print URL
         run: echo "Deployed at ${{ steps.deploy.outputs.url }}"
