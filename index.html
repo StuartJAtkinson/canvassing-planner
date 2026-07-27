@@ -21,6 +21,8 @@
          background: #4a9eff; color: #fff; font-weight: 600; cursor: pointer; }
   .btn:disabled { background: #3a3d45; color: #777; cursor: default; }
   .btn.secondary { background: #2c2f37; }
+  #floatsave { position: fixed; right: 20px; bottom: 20px; z-index: 60; width: auto; margin-top: 0;
+               padding: 12px 22px; box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
   #wardsearch, #target { display: block; width: 100%; margin-top: 10px; padding: 9px; border: 0; border-radius: 6px;
                           background: #2c2f37; color: #eee; font-weight: 600; }
   #routeest { margin-top: 6px; }
@@ -48,6 +50,7 @@
   .routelink:hover { background: #232732; }
   .routelink .go { color: #4a9eff; margin-left: auto; font-size: 12.5px; white-space: nowrap; }
   .routelink .cnt { color: #888; font-size: 12px; white-space: nowrap; }
+  .routelink .nm { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
 
   /* --- route document view: A4-styled pages over the map area --- */
   #docview { position: absolute; inset: 0; display: none; z-index: 500; background: #3c3f46; }
@@ -148,8 +151,9 @@
 
   <div class="step" id="step1">
     <label>Choose an electoral ward</label>
-    <input id="wardsearch" placeholder="Search electoral ward… (Enter to list)">
+    <input id="wardsearch" placeholder="Search electoral ward…">
     <div id="wardresults"></div>
+    <div id="savedwards"></div>
   </div>
 
   <div class="step" id="step2">
@@ -165,20 +169,14 @@
   </div>
 
   <div class="step" id="step3">
-    <label>Area cutout — shape the land you'll actually walk</label>
-    <p class="muted">Cut out whole areas that shouldn't be leafleted (e.g. an industrial estate or open fields).</p>
+    <label>Shape the area — cutout &amp; tweak</label>
+    <p class="muted">Cut out whole areas that shouldn't be leafleted (e.g. an industrial estate or open fields). Every stroke commits immediately — erase part of the cutout any time to restore that land. Repeat in any order; snapping to the road network happens automatically when you plan.</p>
     <button class="btn secondary" id="cutout-suggest" disabled>💡 Suggest non-residential/open land</button>
     <button class="btn secondary" id="cutout-draw">✏️ Draw cutout (freehand)</button>
     <button class="btn secondary" id="cutout-erase" disabled>🧽 Erase cutout (freehand)</button>
-    <button class="btn secondary" id="cutout-apply" disabled>✅ Apply cutout</button>
-    <button class="btn secondary" id="cutout-discard" disabled>🔄 Restart cutout</button>
-  </div>
-
-  <div class="step" id="step4">
-    <label>Snap to roads</label>
-    <button class="btn secondary" id="snap">🧲 Snap &amp; tidy shape</button>
     <button class="btn secondary" id="edit-shape">✥ Tweak: off</button>
   </div>
+  <div class="step" id="step4" style="display:none"></div>
 
   <div class="step" id="step5">
     <label>Plan</label>
@@ -203,8 +201,8 @@
     <button class="btn secondary" id="labelroutes" style="display:none">🏷️ Label routes (renumber, recolour, rename, restart points)</button>
     <button class="btn secondary" id="fixoverlaps" style="display:none">🩹 Fix overlapping roads</button>
     <button class="btn secondary" id="attachorphans" style="display:none"></button>
+    <button class="btn secondary" id="newroute">✏️ New route (draw manually)</button>
     <div id="routelinks"></div>
-    <button class="btn secondary" id="saveward">💾 Save ward</button>
   </div>
 
   <div id="progress" style="display:none">
@@ -253,6 +251,7 @@
   </div>
 </div>
 <div id="otherroutetip"></div>
+<button class="btn" id="floatsave" style="display:none">💾 Save</button>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
@@ -273,25 +272,40 @@ let hoverLayer = L.layerGroup().addTo(map);   // invisible route footprints — 
 let orphansLayer = L.layerGroup().addTo(map); // streets marked "for other route", awaiting reattachment
 let orphans = [];                             // [{f: edge Feature, from: route id}]
 let lastResultBounds = null, viewingRoute = null;
-let selGeom = null;   // GeoJSON geometry to plan against (drawn polygon OR selected ward)
+// Two shapes only: wardGeom (pristine, never edited in place) and eraseMask (everything
+// cut out of it). What actually gets planned is always computed fresh via plotShape() —
+// there's no third, separately-mutated "working shape" to fall out of sync with either.
+let eraseMask = null;
 const $ = id => document.getElementById(id);
 const ONS_WARDS = 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Wards_December_2024_Boundaries_UK_BGC/FeatureServer/0/query';
+
+function plotShape() {
+  if (!wardGeom) return null;
+  if (!eraseMask) return wardGeom;
+  const diff = turf.difference(turf.featureCollection([turf.feature(wardGeom), turf.feature(eraseMask)]));
+  return diff ? diff.geometry : wardGeom;
+}
 
 // --- wizard state ---
 const addrRenderer = L.canvas({ padding: 0.5 });
 let addrLayer = L.layerGroup().addTo(map);
-let workingLayer = null;              // visual outline once selGeom has been eroded from the ward
+let workingLayer = null;              // visual outline of plotShape()
+let maskLayer = null;                 // black hatch-filled view of eraseMask itself
+let smallPieceLayers = [];            // red-highlighted disconnected fragments — click to erase
 let lastAddrResult = null;
-let shapeModified = false;            // has selGeom diverged from the pristine ward? (drives /snap)
-let currentAddrCount = null;          // addresses within the current (possibly eroded) selGeom
-let draftCutout = null;               // GeoJSON geometry: land about to be cut, not yet applied
-let draftCutoutLayer = null;          // its hatch-filled Leaflet layer (draw/erase brushes edit it)
+let shapeModified = false;            // has eraseMask diverged from empty? (drives the snap-on-plan step)
+let currentAddrCount = null;          // addresses within the current plotShape()
 let editingShape = false;             // vertex-edit toggle on workingLayer
 let wardLayer = null, wardGeom = null;
 let loadedFromCheckpoint = false;     // routes came from a "Save ward" checkpoint, not a fresh plan
 
 // =============================== step machine ===============================
-const STEP_NAMES = { 1: 'Choose ward', 2: 'Addresses', 3: 'Area cutout', 4: 'Snap to roads', 5: 'Plan', 6: 'Routes' };
+// step 4 (the old standalone "Snap to roads" screen) no longer exists as its own stop —
+// its tools moved into step 3's div alongside cutout/addition, so navigation skips over it.
+const STEP_NAMES = { 1: 'Choose ward', 2: 'Addresses', 3: 'Shape the area', 5: 'Plan', 6: 'Routes' };
+const DISPLAY_STEPS = [2, 3, 5, 6];   // the wizard steps actually shown, in order — landing page (1) isn't counted
+const NEXT_STEP = { 1: 2, 2: 3, 3: 5, 5: 6 };
+const PREV_STEP = { 2: 1, 3: 2, 5: 3, 6: 5 };
 let step = 1;
 
 function stepReady(n) {   // can Next leave step n?
@@ -304,22 +318,58 @@ function gotoStep(n) {
   if (viewingRoute != null) closeDoc();
   step = n;
   for (let i = 1; i <= 6; i++) $('step' + i).style.display = i === n ? 'block' : 'none';
-  $('stepbar').textContent = `Step ${n} of 6 — ${STEP_NAMES[n]}`;
+  // ward selection isn't part of the numbered wizard — it's the landing page before it
+  $('stepbar').textContent = n === 1 ? 'Choose a ward to begin'
+    : `Step ${DISPLAY_STEPS.indexOf(n) + 1} of ${DISPLAY_STEPS.length} — ${STEP_NAMES[n]}`;
   $('stepback').style.display = n > 1 ? 'block' : 'none';
+  $('resetall').style.display = n > 1 ? 'block' : 'none';
+  $('floatsave').style.display = n > 1 ? 'block' : 'none';
   updateNav();
   if (n === 2 && wardGeom && !lastAddrResult) loadAddresses();
+  if (n >= 2 && n <= 5) saveDraft(); else clearDraft();
+}
+
+// Lightweight reload-survival for the shape you're mid-editing (steps 2-5, pre-plan) — NOT
+// a return of the old full-state autosave that silently ate a finished plan before. Once
+// there's a real plan (step 6 / lastResult), "Save ward" is the deliberate, versioned save;
+// this only ever holds a polygon, which is cheap to lose and cheap to redo either way.
+const DRAFT_KEY = 'shapeDraft';
+function saveDraft() {
+  if (!wardGeom) return;
+  localStorage.setItem(DRAFT_KEY, JSON.stringify({
+    wardLabel: $('wardsearch').value, wardGeom, eraseMask, shapeModified, step,
+  }));
+}
+function clearDraft() { localStorage.removeItem(DRAFT_KEY); }
+
+function restoreDraft() {
+  let draft;
+  try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY)); } catch (e) { return false; }
+  if (!draft || !draft.wardGeom) return false;
+  wardGeom = draft.wardGeom;
+  eraseMask = draft.eraseMask || null;
+  shapeModified = !!draft.shapeModified;
+  $('wardsearch').value = draft.wardLabel || '';
+  wardLayer = L.geoJSON(wardGeom, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
+  map.fitBounds(wardLayer.getBounds());
+  $('plan').disabled = false;
+  redrawWorking();
+  loadAddresses();
+  gotoStep(draft.step || 2);
+  $('status').textContent = `Restored your in-progress shape for "${draft.wardLabel}" after reload.`;
+  return true;
 }
 
 function updateNav() {
   $('stepnext').style.display = (step < 6 && stepReady(step)) ? 'block' : 'none';
 }
 
-$('stepnext').addEventListener('click', () => gotoStep(step + 1));
+$('stepnext').addEventListener('click', () => gotoStep(NEXT_STEP[step]));
 $('stepback').addEventListener('click', () => {
   // the sidebar Back is THE back button everywhere: from a route page it closes the
   // page first (staying on the Routes step), only then does it walk the steps
   if (viewingRoute != null) { closeDoc(); return; }
-  gotoStep(step - 1);
+  gotoStep(PREV_STEP[step]);
 });
 
 // Editing an earlier step invalidates everything computed after it. Ask once, then drop
@@ -356,13 +406,73 @@ function clearPlanData() {
   updateNav();
 }
 
-$('resetall').addEventListener('click', () => location.reload());
+// Reset: only ever visible from step 2 on, so the ward is always already chosen — clears
+// the wizard progress (addresses/cutout/snap/plan/routes) and restarts at Addresses for the
+// SAME ward. Ward selection itself lives one level up now (the landing page), not here.
+$('resetall').addEventListener('click', () => {
+  if (!confirm('Reset — clear all progress for this ward and start over from Addresses?')) return;
+  clearPlanData();
+  loadedFromCheckpoint = false;
+  eraseMask = null;
+  resetWizard();
+  redrawWorking();
+  gotoStep(2);
+  loadAddresses();
+  $('status').textContent = 'Reset — starting over for this ward.';
+});
 
 // =============================== ward search ===============================
-$('wardsearch').addEventListener('keydown', async e => {
-  if (e.key !== 'Enter') return;
-  const q = e.target.value.trim().replace(/'/g, "''");
-  if (q.length < 2) return;
+async function loadSavedWardsList() {
+  const box = $('savedwards');
+  try {
+    const r = await fetch('/saves');
+    const saves = r.ok ? await r.json() : [];
+    if (!Array.isArray(saves) || !saves.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<label>Saved wards</label>' + saves.map(s =>
+      `<div class="routelink" data-slug="${s.slug}"><span class="nm">${s.ward_label}</span>` +
+      `<span class="cnt">${s.saved_at ? new Date(s.saved_at).toLocaleDateString() : ''}</span>` +
+      `<span class="go">📂</span></div>`).join('');
+    box.querySelectorAll('[data-slug]').forEach(el =>
+      el.addEventListener('click', () => loadSavedWard(el.dataset.slug)));
+  } catch { box.innerHTML = ''; }   // /saves not reachable — search still works
+}
+
+async function loadSavedWard(slug) {
+  if (!confirmRewind(true)) return;
+  $('status').textContent = 'Loading saved plan…';
+  const r = await fetch(`/save/${slug}`);
+  if (!r.ok) { $('status').textContent = "Couldn't load that save."; return; }
+  const save = await r.json();
+  if (wardLayer) { map.removeLayer(wardLayer); wardLayer = null; }
+  // ward and mask come back as the two separate pieces they were saved as — the cutout
+  // stays exactly as editable as it was before the save, nothing gets flattened/baked.
+  wardGeom = save.ward_polygon;
+  eraseMask = save.erase_mask || null;
+  wardLayer = L.geoJSON(wardGeom, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
+  map.fitBounds(wardLayer.getBounds());
+  $('wardsearch').value = save.ward_label;
+  $('plan').disabled = false;
+  resetWizard();
+  loadAddresses();
+  redrawWorking();
+  if (save.routes && save.routes.length) {
+    loadedFromCheckpoint = true;
+    const res = { routes: save.routes };
+    render(res, { quiet: true });
+    prepareRoutes(res);
+    gotoStep(6);
+    $('status').textContent = `Loaded saved plan for "${save.ward_label}" (${new Date(save.saved_at).toLocaleString()}).`;
+  } else {
+    loadedFromCheckpoint = false;   // shape-only save — pre-plan steps are still fully usable
+    gotoStep(3);
+    $('status').textContent = `Loaded saved shape for "${save.ward_label}" (${new Date(save.saved_at).toLocaleString()}) — no plan yet.`;
+  }
+}
+
+let wardSearchTimer = null;
+async function searchWards(q) {
+  q = q.trim().replace(/'/g, "''");
+  if (q.length < 2) { $('wardresults').innerHTML = ''; return; }
   $('wardresults').innerHTML = '<div>Searching…</div>';
   try {
     const url = `${ONS_WARDS}?where=UPPER(WD24NM) LIKE UPPER('%25${encodeURIComponent(q)}%25')`
@@ -378,6 +488,15 @@ $('wardsearch').addEventListener('keydown', async e => {
     }
     if (!(j.features || []).length) $('wardresults').innerHTML = '<div>No wards match.</div>';
   } catch { $('wardresults').innerHTML = '<div>Ward service unavailable.</div>'; }
+}
+$('wardsearch').addEventListener('input', e => {
+  clearTimeout(wardSearchTimer);
+  wardSearchTimer = setTimeout(() => searchWards(e.target.value), 300);
+});
+$('wardsearch').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  clearTimeout(wardSearchTimer);
+  searchWards(e.target.value);
 });
 
 function clientSlug(label) {
@@ -393,13 +512,14 @@ async function selectWard(code, label) {
   const j = await (await fetch(url)).json();
   const feat = j.features[0];
   wardGeom = feat.geometry;
-  selGeom = wardGeom;
+  eraseMask = null;
   wardLayer = L.geoJSON(feat, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
   map.fitBounds(wardLayer.getBounds());
   $('plan').disabled = false;
   resetWizard();
   redrawWorking();          // shade the whole ward immediately — cutouts erase holes in this
   loadedFromCheckpoint = false;
+  loadAddresses();
 
   $('status').textContent = `Ward "${label}" selected — checking for a save…`;
   let save = null;
@@ -409,13 +529,25 @@ async function selectWard(code, label) {
   } catch (e) { /* no save reachable — plan fresh */ }
 
   if (save) {
-    loadedFromCheckpoint = true;
-    selGeom = save.ward_polygon;
-    const res = { routes: save.routes };
-    render(res, { quiet: true });
-    prepareRoutes(res);
-    gotoStep(6);
-    $('status').textContent = `Loaded saved plan for "${label}" (${new Date(save.saved_at).toLocaleString()}).`;
+    // saved ward + mask replace the just-fetched ONS boundary — see loadSavedWard
+    if (wardLayer) { map.removeLayer(wardLayer); }
+    wardGeom = save.ward_polygon;
+    eraseMask = save.erase_mask || null;
+    wardLayer = L.geoJSON(wardGeom, { style: { color: '#4a9eff', weight: 3, fillOpacity: 0, interactive: false } }).addTo(map);
+    map.fitBounds(wardLayer.getBounds());
+    loadAddresses();
+    redrawWorking();
+    if (save.routes && save.routes.length) {
+      loadedFromCheckpoint = true;
+      const res = { routes: save.routes };
+      render(res, { quiet: true });
+      prepareRoutes(res);
+      gotoStep(6);
+      $('status').textContent = `Loaded saved plan for "${label}" (${new Date(save.saved_at).toLocaleString()}).`;
+    } else {
+      gotoStep(3);
+      $('status').textContent = `Loaded saved shape for "${label}" (${new Date(save.saved_at).toLocaleString()}) — no plan yet.`;
+    }
   } else {
     $('status').textContent = `Ward "${label}" selected.`;
     gotoStep(2);              // auto-advance; addresses load on entry
@@ -425,7 +557,9 @@ async function selectWard(code, label) {
 function resetWizard() {
   addrLayer.clearLayers().addTo(map);
   if (workingLayer) { map.removeLayer(workingLayer); workingLayer = null; }
-  clearDraftCutout();
+  if (maskLayer) { map.removeLayer(maskLayer); maskLayer = null; }
+  for (const l of smallPieceLayers) map.removeLayer(l);
+  smallPieceLayers = [];
   $('addrlegend').style.display = 'none';
   $('addrcounts').textContent = '';
   $('routeest').textContent = '';
@@ -434,6 +568,7 @@ function resetWizard() {
   shapeModified = false;
   editingShape = false;
   $('edit-shape').textContent = '✥ Tweak: off';
+  $('cutout-erase').disabled = true;
   $('cutout-suggest').disabled = true;
 }
 
@@ -457,45 +592,81 @@ map.on('moveend', () => { clearTimeout(wardsTimer); wardsTimer = setTimeout(load
 loadWardBoundaries();
 
 // =============================== working shape ===============================
+const SMALL_PIECE_M2 = 100000;   // 0.1 km² — cutout/snap fragment noise, not real land worth walking
+
 function redrawWorking() {
   if (workingLayer) map.removeLayer(workingLayer);
   // interactive:false — a filled polygon otherwise steals the mousedown that the
   // freehand cutout tool needs, since the working shape covers most of the map.
-  workingLayer = L.geoJSON(selGeom, { style: { color: '#f28e2b', weight: 4, fillOpacity: 0.08, fillColor: '#f28e2b', interactive: false } }).addTo(map);
+  workingLayer = L.geoJSON(plotShape(), { style: { color: '#f28e2b', weight: 4, fillOpacity: 0.08, fillColor: '#f28e2b', interactive: false } }).addTo(map);
   if (editingShape) enableShapeEditing();
+  if (maskLayer) { map.removeLayer(maskLayer); maskLayer = null; }
+  if (eraseMask) {
+    maskLayer = L.geoJSON(eraseMask, { style: { fillPattern: hatchPattern, fillOpacity: 1, color: '#000', weight: 2, interactive: false } }).addTo(map);
+  }
+  redrawSmallPieces();
+  $('cutout-erase').disabled = !eraseMask;
+  saveDraft();
 }
 
+// a cutout/union can leave the plotted shape as several disconnected pieces (see turf's
+// buffer(0) fix-ups) — anything under SMALL_PIECE_M2 is almost never real land, so it's
+// flagged red and made clickable: one click grows the erase mask to cover just that piece.
+function redrawSmallPieces() {
+  for (const l of smallPieceLayers) map.removeLayer(l);
+  smallPieceLayers = [];
+  const shape = plotShape();
+  if (!shape || shape.type !== 'MultiPolygon') return;
+  for (const coords of shape.coordinates) {
+    const piece = { type: 'Polygon', coordinates: coords };
+    let area;
+    try { area = turf.area(turf.feature(piece)); } catch (e) { continue; }
+    if (area >= SMALL_PIECE_M2) continue;
+    const l = L.geoJSON(piece, { style: { color: '#e11', weight: 2, fillColor: '#e11', fillOpacity: 0.45 } })
+      .bindTooltip(`${Math.round(area)} m² — click to erase`, { sticky: true })
+      .on('click', () => {
+        if (!confirmRewind()) return;
+        eraseMask = eraseMask
+          ? turf.union(turf.featureCollection([turf.feature(eraseMask), turf.feature(piece)])).geometry
+          : piece;
+        shapeModified = true;
+        redrawWorking();
+        recomputeAddrCount();
+        $('status').textContent = `Erased a ${Math.round(area)} m² fragment.`;
+      })
+      .addTo(map);
+    smallPieceLayers.push(l);
+  }
+}
+
+// Tweak edits the shape you can SEE (plotShape() = ward minus mask) — under the hood,
+// any edit is translated back into an equivalent eraseMask so the ward itself stays
+// pristine and the mask stays the single source of truth for what's cut out.
 function enableShapeEditing() {
   workingLayer.eachLayer(l => {
     l.pm.enable();
-    l.on('pm:edit', () => { selGeom = l.toGeoJSON().geometry; shapeModified = true; recomputeAddrCount(); });
+    l.on('pm:edit', () => {
+      const pieces = [];
+      workingLayer.eachLayer(ll => pieces.push(turf.feature(ll.toGeoJSON().geometry)));
+      let newShape = pieces[0];
+      for (let i = 1; i < pieces.length; i++)
+        newShape = turf.union(turf.featureCollection([newShape, pieces[i]])) || newShape;
+      const diff = turf.difference(turf.featureCollection([turf.feature(wardGeom), newShape]));
+      eraseMask = diff ? diff.geometry : null;
+      shapeModified = true;
+      recomputeAddrCount();
+      saveDraft();
+    });
   });
 }
 
-// --- draft cutout: hatch-shaded "erase mask" — one accumulating shape ---
-function clearDraftCutout() {
-  if (draftCutoutLayer) { map.removeLayer(draftCutoutLayer); draftCutoutLayer = null; }
-  draftCutout = null;
-  $('cutout-apply').disabled = true;
-  $('cutout-discard').disabled = true;
-  $('cutout-erase').disabled = true;
-}
-
-function showDraftCutout(geom) {
-  if (draftCutoutLayer) map.removeLayer(draftCutoutLayer);
-  draftCutout = geom;
-  draftCutoutLayer = L.geoJSON(geom, { style: { fillPattern: hatchPattern, fillOpacity: 1, color: '#000', weight: 2, interactive: false } }).addTo(map);
-  $('cutout-apply').disabled = false;
-  $('cutout-discard').disabled = false;
-  $('cutout-erase').disabled = false;
-}
-
-// recount addresses inside the current working shape and refresh the estimate
+// recount addresses inside the current plotted shape and refresh the estimate
 function recomputeAddrCount() {
   if (!lastAddrResult) { currentAddrCount = null; }
   else {
+    const shape = plotShape();
     currentAddrCount = lastAddrResult.points.features
-      .filter(f => turf.booleanPointInPolygon(f, selGeom)).length;
+      .filter(f => turf.booleanPointInPolygon(f, shape)).length;
   }
   updateRouteEstimate();
 }
@@ -510,20 +681,18 @@ function updateRouteEstimate() {
 $('target').addEventListener('input', updateRouteEstimate);
 
 // =============================== cutout tools ===============================
+// Every tool here commits straight into eraseMask — no draft/apply/discard stage. Draw
+// unions a stroke in, Erase differences a stroke out, Suggest unions in a whole blob.
 // Hand-rolled freehand with plain Leaflet mouse events (Geoman Freehand is PRO-only).
-$('cutout-draw').addEventListener('click', () => {
-  if (!selGeom || !confirmRewind()) return;
+function freehandStroke(cursorMsg, style, onStroke) {
   map.pm.disableDraw();
   map.dragging.disable();
   map.getContainer().style.cursor = 'crosshair';
-  $('status').textContent = 'Press and drag on the map to draw the area to cut out, release to finish.';
+  $('status').textContent = cursorMsg;
 
   map.once('mousedown', start => {
     const points = [start.latlng];
-    const liveLayer = L.polygon(points, {
-      color: '#000', weight: 2, fillPattern: hatchPattern, fillOpacity: 1, interactive: false,
-    }).addTo(map);
-
+    const liveLayer = L.polygon(points, style).addTo(map);
     const onMove = move => { points.push(move.latlng); liveLayer.setLatLngs(points); };
     map.on('mousemove', onMove);
 
@@ -532,53 +701,40 @@ $('cutout-draw').addEventListener('click', () => {
       map.removeLayer(liveLayer);
       map.dragging.enable();
       map.getContainer().style.cursor = '';
-      if (points.length >= 3) {
-        const newGeom = L.polygon(points).toGeoJSON().geometry;
-        const merged = draftCutout
-          ? turf.union(turf.featureCollection([turf.feature(draftCutout), turf.feature(newGeom)])).geometry
-          : newGeom;
-        showDraftCutout(merged);
-        $('status').textContent = 'Cutout stroke added — draw more, or Apply.';
-      } else {
-        $('status').textContent = 'Stroke too short — try again.';
-      }
+      if (points.length >= 3) onStroke(L.polygon(points).toGeoJSON().geometry);
+      else $('status').textContent = 'Stroke too short — try again.';
     });
   });
+}
+
+$('cutout-draw').addEventListener('click', () => {
+  if (!wardGeom || !confirmRewind()) return;
+  freehandStroke('Press and drag on the map to draw the area to cut out, release to finish.',
+    { color: '#000', weight: 2, fillPattern: hatchPattern, fillOpacity: 1, interactive: false },
+    newGeom => {
+      eraseMask = eraseMask
+        ? turf.union(turf.featureCollection([turf.feature(eraseMask), turf.feature(newGeom)])).geometry
+        : newGeom;
+      shapeModified = true;
+      redrawWorking();
+      recomputeAddrCount();
+      $('status').textContent = 'Cutout added — draw more, erase, or move on.';
+    });
 });
 
 $('cutout-erase').addEventListener('click', () => {
-  if (!draftCutout) { $('status').textContent = 'Nothing to erase yet — draw or suggest a cutout first.'; return; }
+  if (!eraseMask) { $('status').textContent = 'Nothing cut out yet — draw a cutout first.'; return; }
   if (!confirmRewind()) return;
-  map.pm.disableDraw();
-  map.dragging.disable();
-  map.getContainer().style.cursor = 'crosshair';
-  $('status').textContent = 'Press and drag to erase part of the cutout mask, release to finish.';
-
-  map.once('mousedown', start => {
-    const points = [start.latlng];
-    const liveLayer = L.polygon(points, {
-      color: '#fff', weight: 2, dashArray: '4 4', fillOpacity: 0, interactive: false,
-    }).addTo(map);
-
-    const onMove = move => { points.push(move.latlng); liveLayer.setLatLngs(points); };
-    map.on('mousemove', onMove);
-
-    map.once('mouseup', () => {
-      map.off('mousemove', onMove);
-      map.removeLayer(liveLayer);
-      map.dragging.enable();
-      map.getContainer().style.cursor = '';
-      if (points.length >= 3 && draftCutout) {
-        const eraseGeom = L.polygon(points).toGeoJSON().geometry;
-        const result = turf.difference(turf.featureCollection([turf.feature(draftCutout), turf.feature(eraseGeom)]));
-        if (result) showDraftCutout(result.geometry);
-        else clearDraftCutout();  // erased the whole mask
-        $('status').textContent = 'Erased from cutout — draw/erase more, or Apply.';
-      } else {
-        $('status').textContent = 'Stroke too short — try again.';
-      }
+  freehandStroke('Press and drag to erase part of the cutout, release to finish.',
+    { color: '#fff', weight: 2, dashArray: '4 4', fillOpacity: 0, interactive: false },
+    eraseGeom => {
+      const result = turf.difference(turf.featureCollection([turf.feature(eraseMask), turf.feature(eraseGeom)]));
+      eraseMask = result ? result.geometry : null;
+      shapeModified = true;
+      redrawWorking();
+      recomputeAddrCount();
+      $('status').textContent = 'Erased from the cutout.';
     });
-  });
 });
 
 $('cutout-suggest').addEventListener('click', () => {
@@ -588,25 +744,14 @@ $('cutout-suggest').addEventListener('click', () => {
   let suggestion = turf.feature(geoms[0]);
   for (let i = 1; i < geoms.length; i++)
     suggestion = turf.union(turf.featureCollection([suggestion, turf.feature(geoms[i])]));
-  showDraftCutout(draftCutout
-    ? turf.union(turf.featureCollection([turf.feature(draftCutout), suggestion])).geometry
-    : suggestion.geometry);
-  $('status').textContent = 'Suggested cutout added — draw or erase to adjust, then Apply.';
+  eraseMask = eraseMask
+    ? turf.union(turf.featureCollection([turf.feature(eraseMask), suggestion])).geometry
+    : suggestion.geometry;
+  shapeModified = true;
+  redrawWorking();
+  recomputeAddrCount();
+  $('status').textContent = 'Suggested non-residential/open land added to the cutout.';
 });
-
-$('cutout-apply').addEventListener('click', () => {
-  if (!draftCutout || !selGeom || !confirmRewind()) return;
-  const result = turf.difference(turf.featureCollection([turf.feature(selGeom), turf.feature(draftCutout)]));
-  if (result) {
-    selGeom = result.geometry;
-    shapeModified = true;
-    redrawWorking();
-    recomputeAddrCount();
-  }
-  clearDraftCutout();
-});
-
-$('cutout-discard').addEventListener('click', clearDraftCutout);
 
 // =============================== snap & tweak ===============================
 $('edit-shape').addEventListener('click', () => {
@@ -618,49 +763,15 @@ $('edit-shape').addEventListener('click', () => {
   else workingLayer.eachLayer(l => l.pm.disable());
 });
 
-// snap to roads → expand ~5 m out → straighten edges, one command. The 5 m margin means
-// the Douglas-Peucker straightening (keeps the outermost point of each curve, drops the
-// small in-between wiggles) never clips houses sitting right on the boundary.
-$('snap').addEventListener('click', async () => {
-  if (!wardGeom) return;
-  if (!(selGeom && (selGeom.type === 'Polygon' || selGeom.type === 'MultiPolygon') && shapeModified)) {
-    $('status').textContent = 'Nothing to snap yet — the shape is still the pristine ward boundary.';
-    return;
-  }
-  if (!confirmRewind()) return;
-  const btn = $('snap');
-  btn.disabled = true; btn.textContent = '⏳ Snapping…';
-  try {
-    const before = (JSON.stringify(selGeom).match(/\[/g) || []).length;
-    const r = await fetch('/snap', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ polygon: wardGeom, geometries: [selGeom] }),
-    });
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    const buffed = turf.buffer(turf.feature(j.geometries[0]), 5, { units: 'meters' });
-    const simp = turf.simplify(buffed, { tolerance: 0.00008, highQuality: true });
-    selGeom = simp.geometry;
-    const after = (JSON.stringify(selGeom).match(/\[/g) || []).length;
-    shapeModified = true;
-    redrawWorking();
-    recomputeAddrCount();
-    $('status').textContent = `Shape snapped, expanded ~5 m and straightened (~${before} → ~${after} points) — Tweak the vertices if needed.`;
-  } catch (err) {
-    $('status').textContent = '❌ ' + err.message;
-  }
-  btn.disabled = false; btn.textContent = '🧲 Snap & tidy shape';
-});
-
 // =============================== addresses ===============================
 async function loadAddresses() {
-  if (!selGeom) return;
+  if (!wardGeom) return;
   const btn = $('loadaddr');
   btn.disabled = true; btn.textContent = '⏳ Loading…';
   try {
     const r = await fetch('/addresses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ polygon: selGeom }),
+      body: JSON.stringify({ polygon: plotShape() }),
     });
     const j = await r.json();
     lastAddrResult = j;
@@ -708,7 +819,7 @@ function fetchWardMap() {
   if (!wardMapPromise) {
     wardMapPromise = fetch('/wardmap', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ polygon: selGeom }),
+      body: JSON.stringify({ polygon: plotShape() }),
     }).then(r => r.json()).then(j => { wardMapData = j; return j; })
       .catch(() => { wardMapData = { buildings: [], roads: [] }; return wardMapData; });
   }
@@ -740,7 +851,7 @@ async function prepareRoutes(res) {
 }
 
 $('plan').addEventListener('click', async () => {
-  if (!selGeom || !confirmRewind(true)) return;
+  if (!wardGeom || !confirmRewind(true)) return;
   $('plan').disabled = true;
   $('log').innerHTML = '';
   $('status').textContent = '⏳ Planning…';
@@ -748,7 +859,8 @@ $('plan').addEventListener('click', async () => {
     const r = await fetch('/plan', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        polygon: selGeom,
+        polygon: plotShape(),
+        ward_polygon: wardGeom,
         target: +$('target').value || 175,
       }),
     });
@@ -768,7 +880,14 @@ $('plan').addEventListener('click', async () => {
         else if (j.progress) showProgress(`${j.progress.label}… ${j.progress.done}/${j.progress.total}`,
                                           j.progress.done / j.progress.total);
         else if (j.error) throw new Error(j.error);
-        else if (j.result) { loadedFromCheckpoint = false; render(j.result); gotoStep(6); prepareRoutes(j.result); }
+        else if (j.result) {
+          loadedFromCheckpoint = false;
+          // wardGeom/eraseMask are untouched here — the shape planned was exactly
+          // plotShape(), no server-side snapping to reconcile with any more
+          render(j.result);
+          gotoStep(6);
+          prepareRoutes(j.result);
+        }
       }
     }
   } catch (err) {
@@ -778,31 +897,50 @@ $('plan').addEventListener('click', async () => {
   $('plan').disabled = false;
 });
 
-// Checkpoint save: routes only (edges/color/order/walk/notes/etc — already JSON-plain
-// except the Leaflet layers, stripped below), not the raw drawing/graph state — that's
-// the trade the user asked for: smaller save, but pre-routing steps can't be resumed
-// from it (see confirmRewind's "Need to start from scratch" case).
-$('saveward').addEventListener('click', async () => {
-  if (!lastResult) return;
-  const btn = $('saveward');
+// Checkpoint save — floating button, live from step 2 onward (any ward selected), not just
+// once there's a finished plan. Routes/edges/color/order/walk/notes (Leaflet layers stripped)
+// go in when a plan exists; otherwise it saves just the shape so a mid-edit cutout survives
+// even before Plan is ever clicked. Loading it back (loadSavedWard) checks which case it was.
+$('floatsave').addEventListener('click', async () => {
+  if (!wardGeom) return;
+  const btn = $('floatsave');
   btn.disabled = true; btn.textContent = '⏳ Saving…';
   try {
-    const routes = JSON.parse(JSON.stringify(lastResult.routes,
-      (k, v) => (k === 'layer' || k === 'hoverLayer' || k === 'footprint') ? undefined : v));
+    const routes = lastResult ? JSON.parse(JSON.stringify(lastResult.routes,
+      (k, v) => (k === 'layer' || k === 'hoverLayer' || k === 'footprint') ? undefined : v)) : [];
     const r = await fetch('/save', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ward_label: $('wardsearch').value, ward_polygon: selGeom, routes }),
+      body: JSON.stringify({ ward_label: $('wardsearch').value, ward_polygon: wardGeom, erase_mask: eraseMask, routes }),
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
     btn.textContent = '✅ Saved';
-    setTimeout(() => { btn.textContent = '💾 Save ward'; }, 2000);
+    setTimeout(() => { btn.textContent = '💾 Save'; }, 2000);
+    loadSavedWardsList();
   } catch (err) {
     btn.textContent = '❌ ' + err.message;
-    setTimeout(() => { btn.textContent = '💾 Save ward'; }, 3000);
+    setTimeout(() => { btn.textContent = '💾 Save'; }, 3000);
   } finally {
     btn.disabled = false;
   }
+});
+
+// empty route, opened straight into its doc view — populate it with "Take from route",
+// which only ever pulls real graph edges (orphans / other routes' edges), so its streets
+// are guaranteed to match the network exactly. Numbering/colour come from the normal
+// render() pass; "🏷️ Label routes" names it after its biggest street once it has edges.
+$('newroute').addEventListener('click', async () => {
+  if (!lastResult) return;
+  const rt = {
+    id: (lastResult.routes.length ? Math.max(...lastResult.routes.map(r => r.id)) : 0) + 1,
+    color: COLORS[lastResult.routes.length % COLORS.length],
+    edges: { type: 'FeatureCollection', features: [] },
+    streets: [], order: [], walk: null, walk_km: 0, addresses: 0, notes: '', name: '', top: null,
+  };
+  lastResult.routes.push(rt);
+  render(lastResult);
+  await openDoc(rt);
+  $('status').textContent = 'New empty route — use "⊕ Take from route" (drag a box) to pull in real streets from orphans or other routes.';
 });
 
 // =============================== routes on the map ===============================
@@ -835,6 +973,7 @@ function routeTime(rt) {
 // buffered outline of the route's own streets — the route's "area" (used for the hover
 // zone, the document map's clip, and /routemap); hull fallback if the buffer math fails
 function computeFootprint(rt) {
+  if (!rt.edges.features.length) return { type: 'Feature', properties: {}, geometry: plotShape() };
   try {
     const buf = turf.buffer(rt.edges, 75, { units: 'meters' });
     return buf.features.length > 1 ? turf.union(buf) : buf.features[0];
@@ -1890,6 +2029,7 @@ $('docapply').addEventListener('click', async () => {
   recomputeStreets(rt);
   $('status').textContent = '⏳ Recalculating walk order…';
   await rerouteWalk(rt);
+  rt.footprint = null;   // edges changed — recompute the map crop
   for (const src of touched.values()) {
     if (!src.edges.features.length) { lastResult.routes = lastResult.routes.filter(r => r !== src); continue; }
     recomputeStreets(src);
@@ -1955,7 +2095,7 @@ async function rerouteWalk(rt, useElevation = false) {
     const r = await fetch('/reroute', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        polygon: selGeom,
+        polygon: plotShape(),
         edges: rt.edges.features.map(f => [f.properties.u, f.properties.v, f.properties.k]),
         allowed: rt.streets.map(s => s.name),
         top: rt.top || null,
@@ -2128,7 +2268,7 @@ async function buildRoutesPackPdf(fmt = 'jpeg', onlyRoute = null) {
   const pageW = 210, pageH = 297, margin = 15, contentW = pageW - margin * 2;
   const instrLines = $('instructions').value.split('\n').map(l => l.replace(/^[•\-]\s*/, '').trim()).filter(Boolean);
   const wm = wardMapData || { buildings: [], roads: [], pois: [] };
-  const wardOutline = selGeom;
+  const wardOutline = plotShape();
   const wardBbox = turf.bbox(wardOutline);
   const routes = onlyRoute ? [onlyRoute] : lastResult.routes;
 
@@ -2280,7 +2420,10 @@ for (const btn of pdfButtons) {
 }
 
 // =============================== boot ===============================
-gotoStep(1);   // always starts clear — "Save ward" replaces the old full-state autosave
+// a real plan (step 6) is only ever recovered via the explicit "Save ward" checkpoint —
+// restoreDraft() only ever holds a pre-plan shape, see its own comment above.
+if (!restoreDraft()) gotoStep(1);
+loadSavedWardsList();
 </script>
 </body>
 </html>

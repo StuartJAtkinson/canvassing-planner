@@ -429,7 +429,11 @@ def _rebalance(chunks, edge_addr, node_edges, quota):
     def transfer_bundle(ci, e):
         """Edges ci hands over if it gives up e: just e when ci stays connected without
         it; otherwise e plus every split-off piece except the largest (most addresses,
-        then most edges), so the donor keeps its main body."""
+        then most edges), so the donor keeps its main body. Pieces on the far side of
+        a zero-address bridge (river/rail/bypass crossing) are excluded from any
+        transfer — they belong to the route that ends at the bridge, not the donor,
+        otherwise rebalance would yank a whole isolated pocket across the bridge and
+        fold it into an oversized neighbour."""
         rest = edges_of[ci] - {e}
         if not rest:
             return None
@@ -452,6 +456,25 @@ def _rebalance(chunks, edge_addr, node_edges, quota):
                         stack.append(m)
             pieces.append(piece)
             unseen -= piece
+        if len(pieces) == 1:
+            return [e]
+        # drop pieces that lie beyond a zero-address bridge edge (e.g. a river/rail
+        # crossing) — they belong to whichever route ends at the bridge, not to
+        # ci's main body, and moving them would silently fold a pocket into a
+        # neighbour
+        e_nodes = {e[0], e[1]}
+        reachable = set(e_nodes)
+        stack = list(e_nodes)
+        while stack:
+            n = stack.pop()
+            for m, ee in adj.get(n, ()):
+                if m in reachable:
+                    continue
+                if edge_addr.get(ee, 0) == 0:
+                    continue  # bridge — don't cross into far-side pieces
+                reachable.add(m)
+                stack.append(m)
+        pieces = [p for p in pieces if p & reachable]
         if len(pieces) == 1:
             return [e]
         pieces.sort(key=lambda p: (sum(edge_addr.get(x, 0) for x in p), len(p)))
