@@ -56,3 +56,7 @@
 - [x] **Ward outline disappeared when drawing inside it / no toggle-off** — ward boundaries always load for the visible map area (no checkbox), and the selected ward's outline persists while drawing a sub-area; a "Full ward" button restores whole-ward planning *(resolved 2026-07-08)*
 - [x] **No way to exclude industrial/commercial addresses from a drawn shape** — checkbox added, on by default, filters by OSM landuse polygons *(resolved 2026-07-08)*
 - [x] **No hill-aware splitting / no progress visibility** — optional steep-grade route-boundary splitting (open-elevation lookup) and a live NDJSON progress log in the sidebar during planning *(resolved 2026-07-08)*
+
+## Needs input (Auto Continue)
+*Left by Auto Continue 2026-07-27 — decide these, then clear CONSIDERATIONS.md.*
+- "Route size tails on isolated estates: partial fix only in _rebalance.transfer_bundle by excluding zero-address bridge pieces. All tests pass, but no clean failing-then-passing test exists to verify the exact failure mode. Need either a real ward dump for reproduction or guidance on whether (i) greedy seeding should never cross zero-address bridges, (ii) transfer_bundle should refuse bridges, or another approach is correct. Currently flagging as 'principled, untested against a real reproducer.'"
