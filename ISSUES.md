@@ -61,5 +61,13 @@
 - [x] **No hill-aware splitting / no progress visibility** — optional steep-grade route-boundary splitting (open-elevation lookup) and a live NDJSON progress log in the sidebar during planning *(resolved 2026-07-08)*
 
 ## Needs input (Auto Continue)
-*Left by Auto Continue 2026-07-28 — decide these, then clear CONSIDERATIONS.md.*
-- "Route size tails on isolated estates: Partial fix implemented in `_rebalance.transfer_bundle` to exclude pieces lying beyond a zero-address bridge from any transfer. All existing tests pass, but a clean failing-then-passing test capturing the exact failure mode is pending. The fix is principled but unverified against a reproducer. Guidance needed on whether (i) greedy should never seed a chunk across a zero-address bridge boundary at all, (ii) `transfer_bundle` should refuse bridges (current approach), or (iii) something else is correct."
+*Left by Auto Continue 2026-07-31 — decide these, then clear CONSIDERATIONS.md.*
+- **CONSIDERATIONS.md Highlights:** 
+
+- **Route Balancing:** Partial fix for transferring bundles across zero-address bridges needs verification through a real reproducer or clarification on best practices (greedy seeding, transfer_bundle logic).
+  
+- **Sidebar Styling:** `.routelink` and `#wardresults div` should share a row style to maintain consistency.
+  
+- **Color Palette:** Consolidate three distinct reds (`#e15759`, `#e11`, `#c00`) and two/three primary blues (`#4a9eff`, `#2563eb`, `#1d4ed8`) for better visual harmony or maintain intentional distinctions.
+  
+- **Badge Colors:** Reuse the map's established red/green in delta-badge colours (`updateAddrBadge`, added/removed counts) to avoid divergence unless intentional.
