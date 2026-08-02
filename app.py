@@ -268,7 +268,9 @@ class RerouteReq(BaseModel):
 class SaveReq(BaseModel):
     ward_label: str
     ward_polygon: dict
+    erase_mask: dict | None = None
     routes: list
+    base_generation: int = 0   # GCS generation this save was read from; 0 = "must not exist yet"
 
 
 def ward_slug(label):
@@ -1083,23 +1085,38 @@ def get_save(slug: str):
     blob = _bucket().blob(f"{slug}.json")
     if not blob.exists():
         return JSONResponse({"error": "no save for this ward"}, status_code=404)
-    return JSONResponse(json.loads(blob.download_as_text()))
+    data = json.loads(blob.download_as_text())
+    data["generation"] = blob.generation   # client holds onto this and sends it back on save
+    return JSONResponse(data)
 
 
 @app.post("/save")
 def save(req: SaveReq):
     if not SAVE_BUCKET:
         return JSONResponse({"error": "saving is not configured"}, status_code=501)
+    from google.api_core.exceptions import PreconditionFailed
     slug = ward_slug(req.ward_label)
     data = {
         "ward_label": req.ward_label,
         "ward_polygon": req.ward_polygon,
+        "erase_mask": req.erase_mask,
         "routes": req.routes,
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
-    _bucket().blob(f"{slug}.json").upload_from_string(
-        json.dumps(data), content_type="application/json")
-    return {"ok": True, "slug": slug}
+    blob = _bucket().blob(f"{slug}.json")
+    # optimistic concurrency, not a lock: reject the write outright if the blob moved on from
+    # the generation this save was based on, rather than trying to detect/expire a held lock
+    # (nothing to release if a browser tab just vanishes)
+    try:
+        blob.upload_from_string(
+            json.dumps(data), content_type="application/json",
+            if_generation_match=req.base_generation)
+    except PreconditionFailed:
+        return JSONResponse(
+            {"error": "This ward was saved elsewhere in the meantime — reload it to see "
+                      "those changes before saving again."},
+            status_code=409)
+    return {"ok": True, "slug": slug, "generation": blob.generation}
 
 
 if __name__ == "__main__":

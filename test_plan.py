@@ -1,8 +1,12 @@
 """Self-check for the route partitioner — no network needed."""
-import networkx as nx
+import json
 
-from app import (_rebalance, build_walk, canon, dividers_to_barriers, partition,
-                 partition_by_component)
+import networkx as nx
+from google.api_core.exceptions import PreconditionFailed
+
+import app as app_module
+from app import (SaveReq, _rebalance, build_walk, canon, dividers_to_barriers, get_save,
+                 partition, partition_by_component, save, ward_slug)
 
 
 def test_partition():
@@ -159,6 +163,62 @@ def test_build_walk():
     assert walk_coords and walk_coords[0][0] == (0.0, 0.0), "walk should start at top_node"
 
 
+class _FakeBlob:
+    """In-memory stand-in for a GCS blob, generation-tracked like the real thing."""
+    def __init__(self, store, key):
+        self._store, self._key = store, key
+        self.generation = 0
+
+    def exists(self):
+        return self._key in self._store
+
+    def download_as_text(self):
+        text, self.generation = self._store[self._key]
+        return text
+
+    def upload_from_string(self, data, content_type=None, if_generation_match=None):
+        current = self._store.get(self._key, (None, 0))[1]
+        if if_generation_match is not None and if_generation_match != current:
+            raise PreconditionFailed("generation mismatch")
+        self.generation = current + 1
+        self._store[self._key] = (data, self.generation)
+
+
+class _FakeBucket:
+    def __init__(self):
+        self.store = {}
+
+    def blob(self, key):
+        return _FakeBlob(self.store, key)
+
+
+def test_save_generation_conflict():
+    # a stale base_generation (someone else saved in between) must be rejected, not silently
+    # overwritten — this is the compare-and-swap that stands in for a releasable lock
+    app_module.SAVE_BUCKET = "test-bucket"
+    app_module._gcs_bucket = _FakeBucket()
+
+    req = SaveReq(ward_label="Test Ward", ward_polygon={"type": "Point", "coordinates": [0, 0]},
+                  erase_mask={"type": "Point", "coordinates": [1, 1]}, routes=[])
+    r1 = save(req)
+    assert r1["ok"] and r1["generation"] == 1, f"first save should create generation 1: {r1}"
+
+    stale = save(req)   # still base_generation=0 — the object now exists, so this must conflict
+    assert stale.status_code == 409, f"stale write should be rejected: {stale.status_code}"
+
+    fresh = SaveReq(**{**req.model_dump(), "base_generation": 1})
+    r2 = save(fresh)
+    assert r2["ok"] and r2["generation"] == 2, f"write based on the current generation should succeed: {r2}"
+
+    got = get_save(ward_slug("Test Ward"))
+    body = json.loads(got.body)
+    assert body["generation"] == 2, f"GET should report the latest generation: {body}"
+    assert body["erase_mask"] == {"type": "Point", "coordinates": [1, 1]}, "erase_mask must round-trip"
+
+    app_module.SAVE_BUCKET = None
+    app_module._gcs_bucket = None
+
+
 if __name__ == "__main__":
     test_partition()
     test_dividers_to_barriers()
@@ -167,4 +227,5 @@ if __name__ == "__main__":
     test_partition_no_dropped_streets()
     test_rebalance_across_zero_belt()
     test_build_walk()
+    test_save_generation_conflict()
     print("ok")
