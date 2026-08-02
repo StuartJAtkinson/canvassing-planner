@@ -1078,6 +1078,27 @@ def _bucket():
     return _gcs_bucket
 
 
+@app.get("/saves")
+def list_saves():
+    """Every saved ward's {slug, ward_label, saved_at}, newest first — powers the
+    "Saved wards" sidebar so a save can be browsed back to, not just re-found by
+    re-selecting the exact same ward."""
+    if not SAVE_BUCKET:
+        return JSONResponse({"error": "saving is not configured"}, status_code=501)
+    saves = []
+    for blob in _bucket().list_blobs():
+        if not blob.name.endswith(".json"):
+            continue
+        try:
+            data = json.loads(blob.download_as_text())
+        except Exception:
+            continue
+        saves.append({"slug": blob.name[:-5], "ward_label": data.get("ward_label"),
+                      "saved_at": data.get("saved_at")})
+    saves.sort(key=lambda s: s["saved_at"] or "", reverse=True)
+    return saves
+
+
 @app.get("/save/{slug}")
 def get_save(slug: str):
     if not SAVE_BUCKET:

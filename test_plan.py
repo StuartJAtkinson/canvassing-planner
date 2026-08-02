@@ -6,7 +6,7 @@ from google.api_core.exceptions import PreconditionFailed
 
 import app as app_module
 from app import (SaveReq, _rebalance, build_walk, canon, dividers_to_barriers, get_save,
-                 partition, partition_by_component, save, ward_slug)
+                 list_saves, partition, partition_by_component, save, ward_slug)
 
 
 def test_partition():
@@ -167,6 +167,7 @@ class _FakeBlob:
     """In-memory stand-in for a GCS blob, generation-tracked like the real thing."""
     def __init__(self, store, key):
         self._store, self._key = store, key
+        self.name = key
         self.generation = 0
 
     def exists(self):
@@ -190,6 +191,9 @@ class _FakeBucket:
 
     def blob(self, key):
         return _FakeBlob(self.store, key)
+
+    def list_blobs(self):
+        return [_FakeBlob(self.store, key) for key in self.store]
 
 
 def test_save_generation_conflict():
@@ -219,6 +223,25 @@ def test_save_generation_conflict():
     app_module._gcs_bucket = None
 
 
+def test_list_saves():
+    # sidebar list must surface every saved ward, newest first — this is the endpoint
+    # index.html's loadSavedWardsList() calls that previously 404'd (no GET /saves)
+    app_module.SAVE_BUCKET = "test-bucket"
+    app_module._gcs_bucket = _FakeBucket()
+
+    save(SaveReq(ward_label="Ward A", ward_polygon={"type": "Point", "coordinates": [0, 0]}, routes=[]))
+    save(SaveReq(ward_label="Ward B", ward_polygon={"type": "Point", "coordinates": [0, 0]}, routes=[]))
+
+    saves = list_saves()
+    assert len(saves) == 2, f"expected both saves listed: {saves}"
+    slugs = {s["slug"] for s in saves}
+    assert slugs == {"ward-a", "ward-b"}, f"unexpected slugs: {slugs}"
+    assert all(s["ward_label"] and s["saved_at"] for s in saves), f"missing fields: {saves}"
+
+    app_module.SAVE_BUCKET = None
+    app_module._gcs_bucket = None
+
+
 if __name__ == "__main__":
     test_partition()
     test_dividers_to_barriers()
@@ -228,4 +251,5 @@ if __name__ == "__main__":
     test_rebalance_across_zero_belt()
     test_build_walk()
     test_save_generation_conflict()
+    test_list_saves()
     print("ok")
