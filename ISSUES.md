@@ -66,10 +66,9 @@
 
 ## Needs input (Auto Continue)
 *Left by Auto Continue 2026-08-03 — decide these, then clear CONSIDERATIONS.md.*
-- **CONSIDERATIONS**
-
-- **Route size tails on isolated estates:** Fixed with a defensive guard in `_rebalance.transfer_bundle`, but needs validation against a real reproducer.
-- **Sidebar list-row styling:** `.routelink` and `#wardresults div` have distinct styles; consider standardizing for consistency.
-- **Red color palette:** Three distinct reds (`#e15759`, `#e11`, `#c00`) are used for different purposes; evaluate if consolidation is necessary or intentional.
-- **Blue color palette:** Two/three primary blues (`#4a9eff`, `#2563eb`, `#1d4ed8`) serve different roles; determine if this split is deliberate or an organic choice.
-- **Badge colors:** Delta-badge colors (`#f77`/`#6d6`) do not reuse the map's red/green; decide whether to align with map colors or keep the current distinction.
+- **Open Questions:**
+- Route size tails on isolated estates need a real-world reproducer for verification.
+- Should `.routelink` and `#wardresults div` share one row style?
+- Three distinct reds (`#e15759`, `#e11`, `#c00`) for different map UI attention meanings should be consolidated or kept as is.
+- Two/three "primary" blues (`#4a9eff`, `#2563eb`, `#1d4ed8`) used in different roles could benefit from a unified color scheme or remain distinct.
+- Delta-badge colors (`updateAddrBadge`, added/removed counts) should reuse the map's established red/green for consistency or confirm intentional divergence.
